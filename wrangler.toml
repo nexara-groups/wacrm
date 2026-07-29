@@ -1,0 +1,39 @@
+name = "wacrm"
+main = ".open-next/worker.js"
+compatibility_date = "2025-03-01"
+compatibility_flags = ["nodejs_compat"]
+
+minify = true
+
+workers_dev = false
+preview_urls = false
+
+[[routes]]
+pattern = "wacrm.nexaragroups.com"
+zone_name = "nexaragroups.com"
+custom_domain = true
+
+[assets]
+directory = ".open-next/assets"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "NEXARA_KV"
+id = "209d50b154d5407590fc2fbc82a29e09"
+
+[[d1_databases]]
+binding = "NEXARA_DB"
+database_name = "wacrm-db"
+database_id = "ee1f1c45-d4f2-4bdb-8153-7c81eec8919d"
+
+[[queues.producers]]
+binding = "NEXARA_QUEUE"
+queue = "wacrm-jobs"
+
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+APP_ENV = "production"
+NEXT_PUBLIC_APP_LOCALE = "en"
+NEXT_PUBLIC_SITE_URL = "https://wacrm.nexaragroups.com"
