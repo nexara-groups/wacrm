@@ -354,7 +354,25 @@ async function handleStatusUpdate(status: {
   status: string
   timestamp: string
   recipient_id: string
+  // Present on `failed` status updates — WhatsApp explains WHY here.
+  errors?: Array<{
+    code?: number
+    title?: string
+    message?: string
+    error_data?: { details?: string }
+  }>
 }) {
+  // Surface every failure in runtime logs (Vercel/CF) with its reason, so
+  // delivery problems are debuggable live instead of a blank "failed".
+  if (status.status === 'failed') {
+    console.error(
+      '[webhook] message failed — wamid:',
+      status.id,
+      'errors:',
+      JSON.stringify(status.errors ?? null),
+    )
+  }
+
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
@@ -397,6 +415,16 @@ async function handleStatusUpdate(status: {
     if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
     if (status.status === 'delivered') update.delivered_at = tsIso
     if (status.status === 'read') update.read_at = tsIso
+    if (status.status === 'failed') {
+      // Persist WhatsApp's failure reason (was dropped before, leaving
+      // error_message null). Format: "131049: <title> — <details>".
+      const e = status.errors?.[0]
+      update.error_message = e
+        ? `${e.code ?? ''}: ${e.title ?? e.message ?? 'failed'}${
+            e.error_data?.details ? ` — ${e.error_data.details}` : ''
+          }`.trim()
+        : 'Failed (no reason provided by WhatsApp)'
+    }
 
     const { error: recUpdateErr } = await supabaseAdmin()
       .from('broadcast_recipients')
