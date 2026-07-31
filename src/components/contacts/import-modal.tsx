@@ -141,6 +141,7 @@ export function ImportModal({
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState<{
     imported: number;
+    updated: number;
     skipped: number;
     failed: number;
     tagsAssigned: number;
@@ -226,31 +227,36 @@ export function ImportModal({
       const { unique, duplicates: inFileDupes } = dedupeByPhone(parsedRows);
       skipped += inFileDupes;
 
-      // 2) Skip numbers already in this account. One read of the
-      //    generated `phone_normalized` column (migration 022) → Set.
+      // 2) Look up numbers already in this account by the generated
+      //    `phone_normalized` column (migration 022). Existing contacts are
+      //    UPDATED in place rather than skipped, so a re-uploaded CSV refreshes
+      //    fields and merges tags instead of being a no-op.
       const { data: existingRows } = await supabase
         .from('contacts')
-        .select('phone_normalized')
+        .select('id, phone_normalized')
         .eq('account_id', accountId);
-      const existing = new Set(
-        (existingRows ?? [])
-          .map(
-            (r) => (r as { phone_normalized: string | null }).phone_normalized
-          )
-          .filter((p): p is string => !!p)
-      );
+      const existingIdByPhone = new Map<string, string>();
+      for (const r of (existingRows ?? []) as {
+        id: string;
+        phone_normalized: string | null;
+      }[]) {
+        if (r.phone_normalized) existingIdByPhone.set(r.phone_normalized, r.id);
+      }
 
-      const toInsert = unique.filter((row) => {
-        if (existing.has(normalizeKey(row.phone))) {
-          skipped++;
-          return false;
-        }
-        return true;
-      });
+      const toInsert: ParsedContactRow[] = [];
+      const toUpdate: { contactId: string; row: ParsedContactRow }[] = [];
+      for (const row of unique) {
+        const existingId = existingIdByPhone.get(normalizeKey(row.phone));
+        if (existingId) toUpdate.push({ contactId: existingId, row });
+        else toInsert.push(row);
+      }
 
       // 3) Resolve tag names → ids (admin+ may auto-create missing tags).
       //    Skip the round-trip when the import carries no tag names.
-      const allTagNames = toInsert.flatMap((row) => row.tagNames);
+      const allTagNames = [
+        ...toInsert.flatMap((row) => row.tagNames),
+        ...toUpdate.flatMap((u) => u.row.tagNames),
+      ];
       let tagIdByKey = new Map<string, string>();
       let skippedNames: string[] = [];
       if (allTagNames.length > 0) {
@@ -328,8 +334,35 @@ export function ImportModal({
         }
       }
 
-      // 5) Wire tags onto the contacts we just created. Failure here must
-      //    not mask a successful contact import.
+      // 4b) Update existing contacts in place. 1A: only overwrite a field when
+      //     the CSV provides a non-empty value — never blank out existing data.
+      //     2A: the CSV's tags are queued for assignment; assignImportedContact-
+      //     Tags upserts with ignoreDuplicates, so tags MERGE onto the contact's
+      //     current tags rather than replacing them.
+      let updated = 0;
+      for (const { contactId, row } of toUpdate) {
+        if (row.tagNames.length > 0) {
+          tagAssignments.push({ contactId, tagNames: row.tagNames });
+        }
+        const patch: Record<string, string> = {};
+        if (row.name?.trim()) patch.name = row.name.trim();
+        if (row.email?.trim()) patch.email = row.email.trim();
+        if (row.company?.trim()) patch.company = row.company.trim();
+        if (Object.keys(patch).length === 0) {
+          updated++; // matched existing contact; tags-only (or no-op) refresh
+          continue;
+        }
+        const { error } = await supabase
+          .from('contacts')
+          .update(patch)
+          .eq('id', contactId)
+          .eq('account_id', accountId);
+        if (error) failed++;
+        else updated++;
+      }
+
+      // 5) Wire tags onto the contacts we just created or updated. Failure here
+      //    must not mask a successful contact import.
       let tagsAssigned = 0;
       try {
         tagsAssigned = await assignImportedContactTags(
@@ -341,9 +374,14 @@ export function ImportModal({
         toast.warning(t('toastTagsWarning'));
       }
 
-      setResult({ imported, skipped, failed, tagsAssigned });
+      setResult({ imported, updated, skipped, failed, tagsAssigned });
       if (imported > 0) {
         toast.success(t('toastImported', { count: imported }));
+      }
+      if (updated > 0) {
+        toast.success(t('toastUpdated', { count: updated }));
+      }
+      if (imported > 0 || updated > 0) {
         onImported();
       }
       if (tagsAssigned > 0) {
@@ -572,6 +610,12 @@ export function ImportModal({
                   <div className="text-primary flex items-center gap-1.5 text-sm">
                     <CheckCircle className="size-4 shrink-0" />
                     {t('resultImported', { count: result.imported })}
+                  </div>
+                )}
+                {result.updated > 0 && (
+                  <div className="text-primary flex items-center gap-1.5 text-sm">
+                    <CheckCircle className="size-4 shrink-0" />
+                    {t('resultUpdated', { count: result.updated })}
                   </div>
                 )}
                 {result.tagsAssigned > 0 && (
