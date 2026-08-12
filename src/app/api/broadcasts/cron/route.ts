@@ -4,23 +4,43 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
 import { processBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
 
-async function verifyAuth(request: Request): Promise<boolean> {
-  // 1. Check shared x-cron-secret header against AUTOMATION_CRON_SECRET if configured
-  const expectedSecret = process.env.AUTOMATION_CRON_SECRET;
-  if (expectedSecret) {
-    const suppliedSecret = request.headers.get('x-cron-secret') ?? '';
-    const suppliedBuf = Buffer.from(suppliedSecret);
-    const expectedBuf = Buffer.from(expectedSecret);
+function matchesSecret(supplied: string, expected: string): boolean {
+  if (!supplied || !expected) return false;
+  const suppliedBuf = Buffer.from(supplied);
+  const expectedBuf = Buffer.from(expected);
+  return (
+    suppliedBuf.length === expectedBuf.length &&
+    timingSafeEqual(suppliedBuf, expectedBuf)
+  );
+}
 
+async function verifyAuth(request: Request): Promise<boolean> {
+  const cronSecret = process.env.CRON_SECRET;
+  const autoCronSecret = process.env.AUTOMATION_CRON_SECRET;
+
+  const suppliedXCron = request.headers.get('x-cron-secret') ?? '';
+  const authHeader = request.headers.get('authorization') ?? '';
+  const suppliedBearer = authHeader.replace(/^Bearer\s+/i, '');
+
+  // 1. Check x-cron-secret or Authorization header against CRON_SECRET / AUTOMATION_CRON_SECRET
+  if (cronSecret) {
     if (
-      suppliedBuf.length === expectedBuf.length &&
-      timingSafeEqual(suppliedBuf, expectedBuf)
+      matchesSecret(suppliedXCron, cronSecret) ||
+      matchesSecret(suppliedBearer, cronSecret)
+    ) {
+      return true;
+    }
+  }
+  if (autoCronSecret) {
+    if (
+      matchesSecret(suppliedXCron, autoCronSecret) ||
+      matchesSecret(suppliedBearer, autoCronSecret)
     ) {
       return true;
     }
   }
 
-  // 2. Fallback: check if caller has an active authenticated user session (dashboard / dev trigger)
+  // 2. Check active user session (dashboard trigger)
   try {
     const supabase = await createClient();
     const {
@@ -29,7 +49,12 @@ async function verifyAuth(request: Request): Promise<boolean> {
 
     if (user) return true;
   } catch {
-    // Auth check failed
+    // Session check failed
+  }
+
+  // 3. Dev environment fallback when no secret is configured
+  if (!cronSecret && !autoCronSecret) {
+    return true;
   }
 
   return false;
