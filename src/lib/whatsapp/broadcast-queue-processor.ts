@@ -47,296 +47,338 @@ export function resolveVariables(
 }
 
 /**
- * Process active broadcasts in status 'sending'.
- * For each sending broadcast, picks 1 pending recipient and attempts Meta API send.
- * Updates recipient status and finalizes broadcast status when finished.
+ * Process a single pending recipient for a given broadcast.
+ */
+export async function processSingleRecipient(
+  db: SupabaseClient,
+  broadcast: any,
+): Promise<{ noMorePending: boolean; success: boolean }> {
+  // 1. Fetch 1 pending recipient for this broadcast
+  const { data: recipients, error: rErr } = await db
+    .from('broadcast_recipients')
+    .select('*, contact:contacts(*)')
+    .eq('broadcast_id', broadcast.id)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+    .limit(1);
+
+  if (rErr || !recipients || recipients.length === 0) {
+    return { noMorePending: true, success: false };
+  }
+
+  const recipient = recipients[0];
+
+  // Safely resolve contact object (handling PostgREST object or array joins)
+  let contact: Contact | null = null;
+  if (recipient.contact) {
+    contact = (
+      Array.isArray(recipient.contact)
+        ? recipient.contact[0]
+        : recipient.contact
+    ) as Contact | null;
+  }
+
+  if ((!contact || !contact.phone) && recipient.contact_id) {
+    const { data: fetchedContact } = await db
+      .from('contacts')
+      .select('*')
+      .eq('id', recipient.contact_id)
+      .maybeSingle();
+    contact = fetchedContact as Contact | null;
+  }
+
+  if (!contact || !contact.phone) {
+    console.warn(
+      `[broadcast-processor] Recipient ${recipient.id} missing contact or phone number`,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: 'No contact or phone number found',
+      })
+      .eq('id', recipient.id);
+
+    return { noMorePending: false, success: false };
+  }
+
+  // 2. Fetch WhatsApp config for account
+  const { data: config, error: configErr } = await db
+    .from('whatsapp_config')
+    .select('*')
+    .eq('account_id', broadcast.account_id)
+    .single();
+
+  if (configErr || !config || !config.access_token) {
+    console.error(
+      `[broadcast-processor] Missing WhatsApp config for account ${broadcast.account_id}:`,
+      configErr,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: 'WhatsApp integration not configured for account',
+      })
+      .eq('id', recipient.id);
+
+    return { noMorePending: false, success: false };
+  }
+
+  let accessToken: string;
+  try {
+    accessToken = decrypt(config.access_token);
+  } catch (err) {
+    console.error(
+      `[broadcast-processor] Token decryption failed for account ${broadcast.account_id}:`,
+      err,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: 'Failed to decrypt WhatsApp access token',
+      })
+      .eq('id', recipient.id);
+
+    return { noMorePending: false, success: false };
+  }
+
+  // 3. Fetch template row if template_name is specified
+  let templateRow: MessageTemplate | null = null;
+  if (broadcast.template_name) {
+    let query = db
+      .from('message_templates')
+      .select('*')
+      .eq('account_id', broadcast.account_id)
+      .eq('name', broadcast.template_name);
+
+    if (broadcast.template_language) {
+      query = query.eq('language', broadcast.template_language);
+    }
+
+    const { data: rawTemplateRow } = await query.maybeSingle();
+
+    if (rawTemplateRow && isMessageTemplate(rawTemplateRow)) {
+      templateRow = rawTemplateRow as MessageTemplate;
+    } else {
+      // Fallback lookup without language filter if exact language match failed
+      const { data: fallbackRow } = await db
+        .from('message_templates')
+        .select('*')
+        .eq('account_id', broadcast.account_id)
+        .eq('name', broadcast.template_name)
+        .maybeSingle();
+
+      if (fallbackRow && isMessageTemplate(fallbackRow)) {
+        templateRow = fallbackRow as MessageTemplate;
+      }
+    }
+  }
+
+  // 4. Fetch custom values for contact if variables reference custom fields
+  let customValuesMap: Map<string, string> | undefined;
+  const variables = broadcast.template_variables as Record<
+    string,
+    VariableMapping
+  > | null;
+
+  if (variables) {
+    const hasCustomFieldVar = Object.values(variables).some(
+      (v) => v && v.type === 'custom_field',
+    );
+
+    if (hasCustomFieldVar) {
+      const { data: cValues } = await db
+        .from('contact_custom_values')
+        .select('custom_field_id, value')
+        .eq('contact_id', contact.id);
+
+      customValuesMap = new Map<string, string>();
+      for (const row of cValues ?? []) {
+        customValuesMap.set(row.custom_field_id, row.value ?? '');
+      }
+    }
+  }
+
+  // 5. Resolve template variables
+  const params = variables
+    ? resolveVariables(variables, contact, customValuesMap)
+    : [];
+
+  // 6. Check for header media URL in audience_filter
+  const audienceFilter = broadcast.audience_filter as {
+    headerMediaUrl?: string;
+  } | null;
+  const headerMediaUrl = audienceFilter?.headerMediaUrl?.trim();
+  const headerType = templateRow?.header_type;
+  const isMediaHeader =
+    headerType === 'image' ||
+    headerType === 'video' ||
+    headerType === 'document';
+  const messageParams =
+    isMediaHeader && headerMediaUrl ? { headerMediaUrl } : undefined;
+
+  // 7. Sanitize phone & build variants
+  const sanitized = sanitizePhoneForMeta(contact.phone);
+  if (!isValidE164(sanitized)) {
+    console.warn(
+      `[broadcast-processor] Invalid E.164 phone number: ${contact.phone}`,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: 'Invalid E.164 phone number format',
+      })
+      .eq('id', recipient.id);
+
+    return { noMorePending: false, success: false };
+  }
+
+  const variants = phoneVariants(sanitized);
+  let sentMessageId: string | null = null;
+  let lastError: string | null = null;
+
+  for (const variant of variants) {
+    try {
+      const result = await sendTemplateMessage({
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+        to: variant,
+        templateName: broadcast.template_name,
+        language: broadcast.template_language || 'en_US',
+        template: templateRow ?? undefined,
+        messageParams,
+        params,
+      });
+      sentMessageId = result.messageId;
+      lastError = null;
+      break;
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : 'Unknown error';
+      lastError = errorMessage;
+      if (!isRecipientNotAllowedError(errorMessage)) break;
+    }
+  }
+
+  // 8. Stamp recipient row (PostgreSQL trigger automatically recomputes broadcasts aggregate counts)
+  if (sentMessageId) {
+    console.log(
+      `[broadcast-processor] Sent broadcast message to ${contact.phone} (wamid: ${sentMessageId})`,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'sent',
+        sent_at: new Date().toISOString(),
+        whatsapp_message_id: sentMessageId,
+        error_message: null,
+      })
+      .eq('id', recipient.id);
+  } else {
+    console.error(
+      `[broadcast-processor] Failed to send broadcast to ${contact.phone}:`,
+      lastError,
+    );
+    await db
+      .from('broadcast_recipients')
+      .update({
+        status: 'failed',
+        error_message: lastError || 'Failed to send message',
+      })
+      .eq('id', recipient.id);
+  }
+
+  return { noMorePending: false, success: Boolean(sentMessageId) };
+}
+
+/**
+ * Drain all pending recipients for a single broadcast on the server side,
+ * sending 1 message per minute (default 60,000ms delay) between recipients.
+ * Designed to run in background (e.g. Next.js after() or server worker).
+ */
+export async function drainBroadcastQueue(
+  db: SupabaseClient,
+  broadcastId: string,
+  delayMs = 60000,
+): Promise<void> {
+  console.log(`[broadcast-drain] Starting background drain for broadcast ${broadcastId}`);
+
+  while (true) {
+    // 1. Fetch current broadcast status — stop if cancelled, deleted, or paused
+    const { data: broadcast } = await db
+      .from('broadcasts')
+      .select('*')
+      .eq('id', broadcastId)
+      .single();
+
+    if (!broadcast || broadcast.status !== 'sending') {
+      console.log(
+        `[broadcast-drain] Broadcast ${broadcastId} status is '${broadcast?.status}', stopping drain.`,
+      );
+      break;
+    }
+
+    // 2. Process 1 pending recipient
+    const result = await processSingleRecipient(db, broadcast);
+
+    if (result.noMorePending) {
+      console.log(
+        `[broadcast-drain] No more pending recipients for broadcast ${broadcastId}.`,
+      );
+      await checkAndFinalizeIfDone(db, broadcastId);
+      break;
+    }
+
+    // 3. Check remaining pending count
+    const { count: remainingPending } = await db
+      .from('broadcast_recipients')
+      .select('*', { count: 'exact', head: true })
+      .eq('broadcast_id', broadcastId)
+      .eq('status', 'pending');
+
+    if (!remainingPending || remainingPending === 0) {
+      await checkAndFinalizeIfDone(db, broadcastId);
+      break;
+    }
+
+    // 4. Wait 60 seconds before sending the next recipient
+    console.log(
+      `[broadcast-drain] Waiting ${delayMs / 1000}s before next send for broadcast ${broadcastId} (${remainingPending} remaining)...`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+}
+
+/**
+ * Sweeps active sending broadcasts and processes 1 recipient per broadcast.
+ * Called by periodic cron pinger.
  */
 export async function processBroadcastQueue(
   db: SupabaseClient,
-  batchSizePerBroadcast = 1,
-): Promise<{
-  processed: number;
-  completed: number;
-}> {
+): Promise<{ processed: number; completed: number }> {
   let processedCount = 0;
   let completedCount = 0;
 
-  // 1. Fetch all active broadcasts in status 'sending'
   const { data: sendingBroadcasts, error: bErr } = await db
     .from('broadcasts')
     .select('*')
     .eq('status', 'sending')
     .order('created_at', { ascending: true });
 
-  if (bErr) {
-    console.error('[broadcast-processor] Error fetching sending broadcasts:', bErr);
-    return { processed: 0, completed: 0 };
-  }
-
-  if (!sendingBroadcasts || sendingBroadcasts.length === 0) {
+  if (bErr || !sendingBroadcasts || sendingBroadcasts.length === 0) {
     return { processed: 0, completed: 0 };
   }
 
   for (const broadcast of sendingBroadcasts) {
-    // 2. Fetch pending recipient(s) for this broadcast
-    const { data: recipients, error: rErr } = await db
-      .from('broadcast_recipients')
-      .select('*, contact:contacts(*)')
-      .eq('broadcast_id', broadcast.id)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: true })
-      .limit(batchSizePerBroadcast);
-
-    if (rErr) {
-      console.error(
-        `[broadcast-processor] Error fetching recipients for broadcast ${broadcast.id}:`,
-        rErr,
-      );
-      continue;
-    }
-
-    if (!recipients || recipients.length === 0) {
-      // No pending recipients left for this broadcast -> check and finalize status
+    const result = await processSingleRecipient(db, broadcast);
+    if (result.noMorePending) {
       await checkAndFinalizeIfDone(db, broadcast.id);
       completedCount++;
-      continue;
-    }
-
-    for (const recipient of recipients) {
-      // Safely resolve contact object (handling PostgREST object or array joins)
-      let contact: Contact | null = null;
-      if (recipient.contact) {
-        contact = (
-          Array.isArray(recipient.contact)
-            ? recipient.contact[0]
-            : recipient.contact
-        ) as Contact | null;
-      }
-
-      if ((!contact || !contact.phone) && recipient.contact_id) {
-        const { data: fetchedContact } = await db
-          .from('contacts')
-          .select('*')
-          .eq('id', recipient.contact_id)
-          .maybeSingle();
-        contact = fetchedContact as Contact | null;
-      }
-
-      if (!contact || !contact.phone) {
-        console.warn(
-          `[broadcast-processor] Recipient ${recipient.id} missing contact or phone number`,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'failed',
-            error_message: 'No contact or phone number found',
-          })
-          .eq('id', recipient.id);
-
-        processedCount++;
-        await checkAndFinalizeIfDone(db, broadcast.id);
-        continue;
-      }
-
-      // 3. Fetch WhatsApp config for account
-      const { data: config, error: configErr } = await db
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', broadcast.account_id)
-        .single();
-
-      if (configErr || !config || !config.access_token) {
-        console.error(
-          `[broadcast-processor] Missing WhatsApp config for account ${broadcast.account_id}:`,
-          configErr,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'failed',
-            error_message: 'WhatsApp integration not configured for account',
-          })
-          .eq('id', recipient.id);
-
-        processedCount++;
-        await checkAndFinalizeIfDone(db, broadcast.id);
-        continue;
-      }
-
-      let accessToken: string;
-      try {
-        accessToken = decrypt(config.access_token);
-      } catch (err) {
-        console.error(
-          `[broadcast-processor] Token decryption failed for account ${broadcast.account_id}:`,
-          err,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'failed',
-            error_message: 'Failed to decrypt WhatsApp access token',
-          })
-          .eq('id', recipient.id);
-
-        processedCount++;
-        await checkAndFinalizeIfDone(db, broadcast.id);
-        continue;
-      }
-
-      // 4. Fetch template row if template_name is specified
-      let templateRow: MessageTemplate | null = null;
-      if (broadcast.template_name) {
-        let query = db
-          .from('message_templates')
-          .select('*')
-          .eq('account_id', broadcast.account_id)
-          .eq('name', broadcast.template_name);
-
-        if (broadcast.template_language) {
-          query = query.eq('language', broadcast.template_language);
-        }
-
-        const { data: rawTemplateRow } = await query.maybeSingle();
-
-        if (rawTemplateRow && isMessageTemplate(rawTemplateRow)) {
-          templateRow = rawTemplateRow as MessageTemplate;
-        } else {
-          // Fallback lookup without language filter if exact language match failed
-          const { data: fallbackRow } = await db
-            .from('message_templates')
-            .select('*')
-            .eq('account_id', broadcast.account_id)
-            .eq('name', broadcast.template_name)
-            .maybeSingle();
-
-          if (fallbackRow && isMessageTemplate(fallbackRow)) {
-            templateRow = fallbackRow as MessageTemplate;
-          }
-        }
-      }
-
-      // 5. Fetch custom values for contact if variables reference custom fields
-      let customValuesMap: Map<string, string> | undefined;
-      const variables = broadcast.template_variables as Record<
-        string,
-        VariableMapping
-      > | null;
-
-      if (variables) {
-        const hasCustomFieldVar = Object.values(variables).some(
-          (v) => v && v.type === 'custom_field',
-        );
-
-        if (hasCustomFieldVar) {
-          const { data: cValues } = await db
-            .from('contact_custom_values')
-            .select('custom_field_id, value')
-            .eq('contact_id', contact.id);
-
-          customValuesMap = new Map<string, string>();
-          for (const row of cValues ?? []) {
-            customValuesMap.set(row.custom_field_id, row.value ?? '');
-          }
-        }
-      }
-
-      // 6. Resolve template variables
-      const params = variables
-        ? resolveVariables(variables, contact, customValuesMap)
-        : [];
-
-      // 7. Check for header media URL in audience_filter
-      const audienceFilter = broadcast.audience_filter as {
-        headerMediaUrl?: string;
-      } | null;
-      const headerMediaUrl = audienceFilter?.headerMediaUrl?.trim();
-      const headerType = templateRow?.header_type;
-      const isMediaHeader =
-        headerType === 'image' ||
-        headerType === 'video' ||
-        headerType === 'document';
-      const messageParams =
-        isMediaHeader && headerMediaUrl ? { headerMediaUrl } : undefined;
-
-      // 8. Sanitize phone & build variants
-      const sanitized = sanitizePhoneForMeta(contact.phone);
-      if (!isValidE164(sanitized)) {
-        console.warn(
-          `[broadcast-processor] Invalid E.164 phone number: ${contact.phone}`,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'failed',
-            error_message: 'Invalid E.164 phone number format',
-          })
-          .eq('id', recipient.id);
-
-        processedCount++;
-        await checkAndFinalizeIfDone(db, broadcast.id);
-        continue;
-      }
-
-      const variants = phoneVariants(sanitized);
-      let sentMessageId: string | null = null;
-      let lastError: string | null = null;
-
-      for (const variant of variants) {
-        try {
-          const result = await sendTemplateMessage({
-            phoneNumberId: config.phone_number_id,
-            accessToken,
-            to: variant,
-            templateName: broadcast.template_name,
-            language: broadcast.template_language || 'en_US',
-            template: templateRow ?? undefined,
-            messageParams,
-            params,
-          });
-          sentMessageId = result.messageId;
-          lastError = null;
-          break;
-        } catch (err) {
-          const errorMessage =
-            err instanceof Error ? err.message : 'Unknown error';
-          lastError = errorMessage;
-          if (!isRecipientNotAllowedError(errorMessage)) break;
-        }
-      }
-
-      // 9. Stamp recipient row (PostgreSQL trigger automatically recomputes broadcasts aggregate counts)
-      if (sentMessageId) {
-        console.log(
-          `[broadcast-processor] Sent broadcast message to ${contact.phone} (wamid: ${sentMessageId})`,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'sent',
-            sent_at: new Date().toISOString(),
-            whatsapp_message_id: sentMessageId,
-            error_message: null,
-          })
-          .eq('id', recipient.id);
-      } else {
-        console.error(
-          `[broadcast-processor] Failed to send broadcast to ${contact.phone}:`,
-          lastError,
-        );
-        await db
-          .from('broadcast_recipients')
-          .update({
-            status: 'failed',
-            error_message: lastError || 'Failed to send message',
-          })
-          .eq('id', recipient.id);
-      }
-
+    } else {
       processedCount++;
-
-      // 10. Check if broadcast has completed
       await checkAndFinalizeIfDone(db, broadcast.id);
     }
   }

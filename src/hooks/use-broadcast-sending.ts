@@ -321,106 +321,22 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
 
   async function createAndSendBroadcast(payload: BroadcastPayload): Promise<string> {
     setIsProcessing(true);
-    setProgress(0);
-
-    const supabase = createClient();
+    setProgress(50);
 
     try {
-      // ── Step 0: Resolve current user ──────────────────────────────
-      // broadcasts.user_id is NOT NULL + guarded by RLS
-      // (auth.uid() = user_id). Without this, the INSERT below was
-      // silently failing with 23502 / 42501 — the wizard would
-      // no-op with no feedback.
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) {
-        throw new Error('You are not signed in.');
-      }
-      if (!accountId) {
-        throw new Error('Your profile is not linked to an account.');
+      const res = await fetch('/api/broadcasts/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.broadcastId) {
+        throw new Error(data.error || 'Failed to create broadcast');
       }
 
-      // ── Step 1: Resolve audience contacts ─────────────────────────
-      setProgress(5);
-      const contacts = await resolveAudience(payload.audience);
-
-      if (contacts.length === 0) {
-        throw new Error('No contacts found for this audience.');
-      }
-
-      // ── Step 2: Create broadcast row ──────────────────────────────
-      setProgress(10);
-      const { data: broadcast, error: broadcastError } = await supabase
-        .from('broadcasts')
-        .insert({
-          user_id: user.id,
-          account_id: accountId,
-          name: payload.name,
-          template_name: payload.template.name,
-          template_language: payload.template.language ?? 'en_US',
-          template_variables: payload.variables,
-          audience_filter: {
-            type: payload.audience.type,
-            tagIds: payload.audience.tagIds,
-            customField: payload.audience.customField,
-            excludeTagIds: payload.audience.excludeTagIds,
-            ...(payload.headerMediaUrl
-              ? { headerMediaUrl: payload.headerMediaUrl }
-              : {}),
-          },
-          status: 'sending',
-          total_recipients: contacts.length,
-          sent_count: 0,
-          delivered_count: 0,
-          read_count: 0,
-          replied_count: 0,
-          failed_count: 0,
-        })
-        .select()
-        .single();
-
-      if (broadcastError || !broadcast) {
-        throw new Error(
-          `Failed to create broadcast: ${broadcastError?.message ?? 'unknown error'}`,
-        );
-      }
-
-      // ── Step 3: Insert recipient rows ─────────────────────────────
-      setProgress(30);
-      const recipientRows = contacts.map((contact) => ({
-        broadcast_id: broadcast.id,
-        contact_id: contact.id,
-        status: 'pending' as const,
-      }));
-
-      for (let i = 0; i < recipientRows.length; i += INSERT_BATCH_SIZE) {
-        const batch = recipientRows.slice(i, i + INSERT_BATCH_SIZE);
-        const { error: recipientError } = await supabase
-          .from('broadcast_recipients')
-          .insert(batch);
-        if (recipientError) {
-          await supabase
-            .from('broadcasts')
-            .update({
-              status: 'failed',
-              failed_count: contacts.length,
-            })
-            .eq('id', broadcast.id);
-          throw new Error(
-            `Failed to insert recipient batch ${i / INSERT_BATCH_SIZE + 1}: ${recipientError.message}`,
-          );
-        }
-        const pct = 30 + Math.round(((i + batch.length) / recipientRows.length) * 65);
-        setProgress(pct);
-      }
-
-      // ── Step 4: Enqueue complete -> trigger initial server drain asynchronously
       setProgress(100);
-      fetch('/api/broadcasts/cron', { method: 'POST' }).catch(() => {});
-
-      return broadcast.id;
+      return data.broadcastId;
     } finally {
       setIsProcessing(false);
     }
