@@ -63,10 +63,9 @@ export default function NewBroadcastPage() {
         variables,
         headerMediaUrl,
       });
+      toast.success(t('toastQueued', { defaultValue: 'Broadcast queued! Messages will send in the background.' }));
       router.push(`/broadcasts/${broadcastId}`);
     } catch (err) {
-      // Previously swallowed with console.error — the wizard would
-      // just no-op, leaving the user confused. Surface the reason.
       const message = err instanceof Error ? err.message : 'Broadcast failed';
       console.error('Broadcast failed:', err);
       toast.error(message);
