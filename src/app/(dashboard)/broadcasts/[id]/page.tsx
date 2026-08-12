@@ -194,6 +194,9 @@ export default function BroadcastDetailPage() {
   useEffect(() => {
     if (broadcast?.status !== 'sending') return;
 
+    // Trigger server background drain for any remaining pending recipients
+    fetch('/api/broadcasts/cron', { method: 'POST' }).catch(() => {});
+
     const timer = setInterval(() => {
       fetchData();
     }, 5000);

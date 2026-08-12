@@ -373,14 +373,14 @@ export async function processBroadcastQueue(
   }
 
   for (const broadcast of sendingBroadcasts) {
-    const result = await processSingleRecipient(db, broadcast);
-    if (result.noMorePending) {
-      await checkAndFinalizeIfDone(db, broadcast.id);
-      completedCount++;
-    } else {
-      processedCount++;
-      await checkAndFinalizeIfDone(db, broadcast.id);
-    }
+    // Resume/drain any active broadcast stuck in 'sending' status
+    drainBroadcastQueue(db, broadcast.id, 60000).catch((err) =>
+      console.error(
+        `[broadcast-cron] Error resuming drain for broadcast ${broadcast.id}:`,
+        err,
+      ),
+    );
+    processedCount++;
   }
 
   return { processed: processedCount, completed: completedCount };
