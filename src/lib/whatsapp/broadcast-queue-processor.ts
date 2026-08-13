@@ -310,18 +310,36 @@ export async function drainBroadcastQueue(
   let processedInThisRun = 0;
 
   while (processedInThisRun < maxBatchSize) {
-    // 1. Fetch current broadcast status — stop if cancelled, deleted, or paused
+    // 1. Fetch current broadcast status — stop if cancelled or deleted
     const { data: broadcast } = await db
       .from('broadcasts')
       .select('*')
       .eq('id', broadcastId)
       .single();
 
-    if (!broadcast || broadcast.status !== 'sending') {
-      console.log(
-        `[broadcast-drain] Broadcast ${broadcastId} status is '${broadcast?.status}', stopping drain.`,
-      );
+    if (!broadcast) {
+      console.log(`[broadcast-drain] Broadcast ${broadcastId} not found, stopping drain.`);
       break;
+    }
+
+    // If broadcast is not in 'sending' status, ensure it is set to 'sending' if pending recipients exist
+    if (broadcast.status !== 'sending') {
+      const { count: pendingCount } = await db
+        .from('broadcast_recipients')
+        .select('*', { count: 'exact', head: true })
+        .eq('broadcast_id', broadcastId)
+        .eq('status', 'pending');
+
+      if (pendingCount && pendingCount > 0) {
+        console.log(`[broadcast-drain] Re-activating broadcast ${broadcastId} to 'sending' to drain ${pendingCount} pending recipients.`);
+        await db
+          .from('broadcasts')
+          .update({ status: 'sending', updated_at: new Date().toISOString() })
+          .eq('id', broadcastId);
+      } else {
+        await checkAndFinalizeIfDone(db, broadcastId);
+        break;
+      }
     }
 
     // 2. Process 1 pending recipient
@@ -349,7 +367,7 @@ export async function drainBroadcastQueue(
       break;
     }
 
-    // 4. Short 1s pause between sends (smooth rate control, no function timeouts)
+    // 4. Short 1s pause between sends
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
@@ -364,7 +382,6 @@ export async function drainBroadcastQueue(
     console.log(
       `[broadcast-drain] ${finalPending} recipients remaining for ${broadcastId}, scheduling next batch...`,
     );
-    // Chain execution via cron endpoint asynchronously
     fetch(`${process.env.NEXT_PUBLIC_SITE_URL || ''}/api/broadcasts/cron`, {
       method: 'POST',
     }).catch(() => {});
@@ -374,8 +391,8 @@ export async function drainBroadcastQueue(
 }
 
 /**
- * Sweeps active sending broadcasts and drains pending recipients.
- * Called by periodic cron pinger or background trigger.
+ * Sweeps active and stuck broadcasts and drains pending recipients.
+ * Also cleans up orphaned pending recipients for finalized campaigns.
  */
 export async function processBroadcastQueue(
   db: SupabaseClient,
@@ -383,21 +400,24 @@ export async function processBroadcastQueue(
   let processedCount = 0;
   let completedCount = 0;
 
-  const { data: sendingBroadcasts, error: bErr } = await db
-    .from('broadcasts')
-    .select('*')
-    .eq('status', 'sending')
-    .order('created_at', { ascending: true });
+  // A. Find all broadcasts that have pending recipients
+  const { data: pendingRecipients } = await db
+    .from('broadcast_recipients')
+    .select('broadcast_id')
+    .eq('status', 'pending')
+    .limit(100);
 
-  if (bErr || !sendingBroadcasts || sendingBroadcasts.length === 0) {
+  if (!pendingRecipients || pendingRecipients.length === 0) {
     return { processed: 0, completed: 0 };
   }
 
-  for (const broadcast of sendingBroadcasts) {
-    // Resume/drain any active broadcast stuck in 'sending' status
-    drainBroadcastQueue(db, broadcast.id, 1000).catch((err) =>
+  const broadcastIds = [...new Set(pendingRecipients.map((r) => r.broadcast_id))];
+
+  for (const bId of broadcastIds) {
+    // Resume/drain any broadcast with pending recipients
+    drainBroadcastQueue(db, bId, 1000).catch((err) =>
       console.error(
-        `[broadcast-cron] Error resuming drain for broadcast ${broadcast.id}:`,
+        `[broadcast-cron] Error resuming drain for broadcast ${bId}:`,
         err,
       ),
     );
@@ -405,6 +425,23 @@ export async function processBroadcastQueue(
   }
 
   return { processed: processedCount, completed: completedCount };
+}
+
+export async function cancelBroadcastPendingQueue(
+  db: SupabaseClient,
+  broadcastId: string,
+): Promise<void> {
+  // Mark all pending recipient rows as failed/cancelled
+  await db
+    .from('broadcast_recipients')
+    .update({
+      status: 'failed',
+      error_message: 'Cancelled by user',
+    })
+    .eq('broadcast_id', broadcastId)
+    .eq('status', 'pending');
+
+  await checkAndFinalizeIfDone(db, broadcastId);
 }
 
 async function checkAndFinalizeIfDone(

@@ -285,6 +285,34 @@ export default function BroadcastDetailPage() {
     { label: t('stats.replied'), value: broadcast.replied_count, color: 'bg-indigo-500' },
   ];
 
+  const pendingCount = useMemo(
+    () => recipients.filter((r) => r.status === 'pending').length,
+    [recipients],
+  );
+
+  async function handleResumeQueue() {
+    try {
+      await fetch('/api/broadcasts/cron', { method: 'POST' });
+      toast.success('Queue process resumed in background!');
+      fetchData();
+    } catch {
+      toast.error('Failed to trigger queue processing');
+    }
+  }
+
+  async function handleCancelQueue() {
+    try {
+      const res = await fetch(`/api/broadcasts/${broadcastId}/cancel`, {
+        method: 'POST',
+      });
+      if (!res.ok) throw new Error('Failed to cancel queue');
+      toast.success('Remaining pending queue cancelled');
+      fetchData();
+    } catch {
+      toast.error('Failed to cancel queue');
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -317,48 +345,68 @@ export default function BroadcastDetailPage() {
           </div>
         </div>
 
-        {/* Delete — inline-confirm pattern matches the pipeline-settings
-            "Delete Pipeline" flow. Mid-send broadcasts can't be deleted
-            because orphaning in-flight Meta messages would leave the
-            funnel inconsistent. */}
-        {confirmDelete ? (
-          <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
-            <span className="text-red-300">{t('deletePrompt')}</span>
+        <div className="flex items-center gap-2">
+          {pendingCount > 0 && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleResumeQueue}
+                className="border-primary/40 text-primary hover:bg-primary/10"
+              >
+                <Send className="mr-1.5 h-3.5 w-3.5" />
+                Resume Queue ({pendingCount})
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelQueue}
+                className="border-amber-500/40 text-amber-500 hover:bg-amber-500/10"
+              >
+                Cancel Pending ({pendingCount})
+              </Button>
+            </>
+          )}
+
+          {confirmDelete ? (
+            <div className="flex items-center gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm">
+              <span className="text-red-300">{t('deletePrompt')}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleting}
+                className="h-7 border-border bg-transparent text-muted-foreground hover:bg-muted"
+              >
+                {t('cancel')}
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleDelete}
+                disabled={deleting}
+                className="h-7 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? t('deleting') : t('confirm')}
+              </Button>
+            </div>
+          ) : (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setConfirmDelete(false)}
-              disabled={deleting}
-              className="h-7 border-border bg-transparent text-muted-foreground hover:bg-muted"
+              disabled={broadcast.status === 'sending'}
+              onClick={() => setConfirmDelete(true)}
+              title={
+                broadcast.status === 'sending'
+                  ? t('cannotDeleteSending')
+                  : t('deleteHover')
+              }
+              className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-40"
             >
-              {t('cancel')}
+              <Trash2 className="h-3.5 w-3.5" />
+              {t('delete')}
             </Button>
-            <Button
-              size="sm"
-              onClick={handleDelete}
-              disabled={deleting}
-              className="h-7 bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
-            >
-              {deleting ? t('deleting') : t('confirm')}
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={broadcast.status === 'sending'}
-            onClick={() => setConfirmDelete(true)}
-            title={
-              broadcast.status === 'sending'
-                ? t('cannotDeleteSending')
-                : t('deleteHover')
-            }
-            className="border-red-500/30 bg-transparent text-red-400 hover:bg-red-500/10 disabled:opacity-40"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            {t('delete')}
-          </Button>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Stats — 6 cards: Total / Sent / Delivered / Read / Replied / Failed */}
