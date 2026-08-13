@@ -1,7 +1,7 @@
 import { after, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
-import { drainBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
+import { processSingleRecipient, checkAndFinalizeIfDone } from '@/lib/whatsapp/broadcast-queue-processor';
 
 export const maxDuration = 60;
 
@@ -64,7 +64,6 @@ export async function POST(request: Request) {
         contacts = data ?? [];
       }
     } else if (audience.type === 'custom_field' && audience.customField) {
-      // Custom field audience
       const { fieldId, operator, value } = audience.customField;
       let query = supabase
         .from('contact_custom_values')
@@ -172,16 +171,24 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Schedule background server drain.
-    // CRITICAL: after() callback MUST return the promise so Next.js
-    // knows to keep the serverless function alive until it resolves.
+    // 6. Send the FIRST message immediately in after() callback,
+    //    then let the Vercel Cron (every 1 min) handle the rest.
     const broadcastId = broadcast.id;
     after(async () => {
       try {
         const admin = supabaseAdmin();
-        await drainBroadcastQueue(admin, broadcastId, 200);
+        const bData = await admin
+          .from('broadcasts')
+          .select('*')
+          .eq('id', broadcastId)
+          .single();
+
+        if (bData.data) {
+          await processSingleRecipient(admin, bData.data);
+          await checkAndFinalizeIfDone(admin, broadcastId);
+        }
       } catch (err) {
-        console.error(`[broadcast-create] Error in background drain for ${broadcastId}:`, err);
+        console.error(`[broadcast-create] Error sending first message for ${broadcastId}:`, err);
       }
     });
 

@@ -440,7 +440,7 @@ export async function cancelBroadcastPendingQueue(
   await checkAndFinalizeIfDone(db, broadcastId);
 }
 
-async function checkAndFinalizeIfDone(
+export async function checkAndFinalizeIfDone(
   db: SupabaseClient,
   broadcastId: string,
 ): Promise<void> {

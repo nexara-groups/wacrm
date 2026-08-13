@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
-import { processBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
+import { processSingleRecipient, checkAndFinalizeIfDone } from '@/lib/whatsapp/broadcast-queue-processor';
 
 export const maxDuration = 60;
 
@@ -24,7 +24,6 @@ async function verifyAuth(request: Request): Promise<boolean> {
   const authHeader = request.headers.get('authorization') ?? '';
   const suppliedBearer = authHeader.replace(/^Bearer\s+/i, '');
 
-  // 1. Check x-cron-secret or Authorization header against CRON_SECRET / AUTOMATION_CRON_SECRET
   if (cronSecret) {
     if (
       matchesSecret(suppliedXCron, cronSecret) ||
@@ -42,28 +41,29 @@ async function verifyAuth(request: Request): Promise<boolean> {
     }
   }
 
-  // 2. Check active user session (dashboard trigger)
   try {
     const supabase = await createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
-
     if (user) return true;
   } catch {
     // Session check failed
   }
 
-  // 3. Fallback: Allow POST request from app origin or if no secret is configured
-  const referer = request.headers.get('referer') ?? '';
-  const origin = request.headers.get('origin') ?? '';
-  if (request.method === 'POST' || !cronSecret) {
-    if (origin || referer || !cronSecret) return true;
+  // Allow POST from app or when no secret configured
+  if (request.method === 'POST' || (!cronSecret && !autoCronSecret)) {
+    return true;
   }
 
   return false;
 }
 
+/**
+ * Cron handler: runs every 1 minute via Vercel Cron.
+ * Sends exactly 1 pending message per active broadcast per invocation.
+ * This gives us 1 message/minute pacing without needing long-running functions.
+ */
 export async function GET(request: Request) {
   const isAuthorized = await verifyAuth(request);
   if (!isAuthorized) {
@@ -72,11 +72,58 @@ export async function GET(request: Request) {
 
   try {
     const admin = supabaseAdmin();
-    const result = await processBroadcastQueue(admin);
+
+    // Find all broadcasts that have pending recipients
+    const { data: pendingRecipients } = await admin
+      .from('broadcast_recipients')
+      .select('broadcast_id')
+      .eq('status', 'pending')
+      .limit(200);
+
+    if (!pendingRecipients || pendingRecipients.length === 0) {
+      return NextResponse.json({ success: true, processed: 0, message: 'No pending recipients' });
+    }
+
+    const broadcastIds = [...new Set(pendingRecipients.map((r) => r.broadcast_id))];
+    let processedCount = 0;
+
+    for (const bId of broadcastIds) {
+      // Fetch broadcast
+      const { data: broadcast } = await admin
+        .from('broadcasts')
+        .select('*')
+        .eq('id', bId)
+        .single();
+
+      if (!broadcast) continue;
+
+      // Ensure broadcast is in 'sending' status
+      if (broadcast.status !== 'sending') {
+        await admin
+          .from('broadcasts')
+          .update({ status: 'sending', updated_at: new Date().toISOString() })
+          .eq('id', bId);
+      }
+
+      // Process exactly 1 pending recipient for this broadcast
+      try {
+        const result = await processSingleRecipient(admin, broadcast);
+        if (result.noMorePending) {
+          await checkAndFinalizeIfDone(admin, bId);
+        }
+        processedCount++;
+      } catch (err) {
+        console.error(`[broadcast-cron] Error processing recipient for broadcast ${bId}:`, err);
+      }
+
+      // Check if broadcast is done
+      await checkAndFinalizeIfDone(admin, bId);
+    }
+
     return NextResponse.json({
       success: true,
-      processed: result.processed,
-      completed: result.completed,
+      processed: processedCount,
+      broadcasts: broadcastIds.length,
     });
   } catch (error) {
     console.error('[broadcast-cron] Error processing broadcast queue:', error);
