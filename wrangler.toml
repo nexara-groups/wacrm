@@ -31,7 +31,7 @@ binding = "NEXARA_QUEUE"
 queue = "wacrm-jobs"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["* * * * *"]
 
 [vars]
 APP_ENV = "production"
