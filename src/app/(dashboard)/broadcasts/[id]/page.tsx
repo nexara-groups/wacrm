@@ -290,6 +290,11 @@ export default function BroadcastDetailPage() {
     [recipients],
   );
 
+  const failedCount = useMemo(
+    () => recipients.filter((r) => r.status === 'failed').length,
+    [recipients],
+  );
+
   async function handleResumeQueue() {
     try {
       await fetch('/api/broadcasts/cron', { method: 'POST' });
@@ -310,6 +315,30 @@ export default function BroadcastDetailPage() {
       fetchData();
     } catch {
       toast.error('Failed to cancel queue');
+    }
+  }
+
+  async function handleRetryFailed() {
+    try {
+      const supabase = createClient();
+      const { error: updateErr } = await supabase
+        .from('broadcast_recipients')
+        .update({ status: 'pending', error_message: null })
+        .eq('broadcast_id', broadcastId)
+        .eq('status', 'failed');
+
+      if (updateErr) throw updateErr;
+
+      await supabase
+        .from('broadcasts')
+        .update({ status: 'sending', updated_at: new Date().toISOString() })
+        .eq('id', broadcastId);
+
+      await fetch('/api/broadcasts/cron', { method: 'POST' });
+      toast.success('Retrying failed messages in background!');
+      fetchData();
+    } catch {
+      toast.error('Failed to retry failed messages');
     }
   }
 
@@ -345,8 +374,20 @@ export default function BroadcastDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {pendingCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {failedCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetryFailed}
+              className="border-red-500/40 text-red-400 hover:bg-red-500/10"
+            >
+              <Send className="mr-1.5 h-3.5 w-3.5" />
+              Retry Failed ({failedCount})
+            </Button>
+          )}
+
+          {(pendingCount > 0 || broadcast.status === 'sending') && (
             <>
               <Button
                 variant="outline"
@@ -355,16 +396,18 @@ export default function BroadcastDetailPage() {
                 className="border-primary/40 text-primary hover:bg-primary/10"
               >
                 <Send className="mr-1.5 h-3.5 w-3.5" />
-                Resume Queue ({pendingCount})
+                Resume Queue {pendingCount > 0 ? `(${pendingCount})` : ''}
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCancelQueue}
-                className="border-amber-500/40 text-amber-500 hover:bg-amber-500/10"
-              >
-                Cancel Pending ({pendingCount})
-              </Button>
+              {pendingCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelQueue}
+                  className="border-amber-500/40 text-amber-500 hover:bg-amber-500/10"
+                >
+                  Cancel Pending ({pendingCount})
+                </Button>
+              )}
             </>
           )}
 
