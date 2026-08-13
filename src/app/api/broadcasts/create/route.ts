@@ -1,7 +1,7 @@
 import { after, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
-import { processSingleRecipient, checkAndFinalizeIfDone } from '@/lib/whatsapp/broadcast-queue-processor';
+import { drainBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
 
 export const maxDuration = 60;
 
@@ -171,24 +171,14 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Send the FIRST message immediately in after() callback,
-    //    then let the Vercel Cron (every 1 min) handle the rest.
+    // 6. Drain recipients sequentially with 1 second pacing in after() background worker
     const broadcastId = broadcast.id;
     after(async () => {
       try {
         const admin = supabaseAdmin();
-        const bData = await admin
-          .from('broadcasts')
-          .select('*')
-          .eq('id', broadcastId)
-          .single();
-
-        if (bData.data) {
-          await processSingleRecipient(admin, bData.data);
-          await checkAndFinalizeIfDone(admin, broadcastId);
-        }
+        await drainBroadcastQueue(admin, broadcastId, 1000, 45);
       } catch (err) {
-        console.error(`[broadcast-create] Error sending first message for ${broadcastId}:`, err);
+        console.error(`[broadcast-create] Error in background drain for ${broadcastId}:`, err);
       }
     });
 

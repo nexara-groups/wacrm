@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
-import { processSingleRecipient, checkAndFinalizeIfDone } from '@/lib/whatsapp/broadcast-queue-processor';
+import { processBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
 
 export const maxDuration = 60;
 
@@ -59,11 +59,6 @@ async function verifyAuth(request: Request): Promise<boolean> {
   return false;
 }
 
-/**
- * Cron handler: runs every 1 minute via Vercel Cron.
- * Sends exactly 1 pending message per active broadcast per invocation.
- * This gives us 1 message/minute pacing without needing long-running functions.
- */
 export async function GET(request: Request) {
   const isAuthorized = await verifyAuth(request);
   if (!isAuthorized) {
@@ -72,58 +67,10 @@ export async function GET(request: Request) {
 
   try {
     const admin = supabaseAdmin();
-
-    // Find all broadcasts that have pending recipients
-    const { data: pendingRecipients } = await admin
-      .from('broadcast_recipients')
-      .select('broadcast_id')
-      .eq('status', 'pending')
-      .limit(200);
-
-    if (!pendingRecipients || pendingRecipients.length === 0) {
-      return NextResponse.json({ success: true, processed: 0, message: 'No pending recipients' });
-    }
-
-    const broadcastIds = [...new Set(pendingRecipients.map((r) => r.broadcast_id))];
-    let processedCount = 0;
-
-    for (const bId of broadcastIds) {
-      // Fetch broadcast
-      const { data: broadcast } = await admin
-        .from('broadcasts')
-        .select('*')
-        .eq('id', bId)
-        .single();
-
-      if (!broadcast) continue;
-
-      // Ensure broadcast is in 'sending' status
-      if (broadcast.status !== 'sending') {
-        await admin
-          .from('broadcasts')
-          .update({ status: 'sending', updated_at: new Date().toISOString() })
-          .eq('id', bId);
-      }
-
-      // Process exactly 1 pending recipient for this broadcast
-      try {
-        const result = await processSingleRecipient(admin, broadcast);
-        if (result.noMorePending) {
-          await checkAndFinalizeIfDone(admin, bId);
-        }
-        processedCount++;
-      } catch (err) {
-        console.error(`[broadcast-cron] Error processing recipient for broadcast ${bId}:`, err);
-      }
-
-      // Check if broadcast is done
-      await checkAndFinalizeIfDone(admin, bId);
-    }
-
+    const result = await processBroadcastQueue(admin);
     return NextResponse.json({
       success: true,
-      processed: processedCount,
-      broadcasts: broadcastIds.length,
+      ...result,
     });
   } catch (error) {
     console.error('[broadcast-cron] Error processing broadcast queue:', error);
