@@ -389,7 +389,9 @@ export async function drainBroadcastQueue(
 }
 
 /**
- * Sweeps active and stuck broadcasts and drains pending recipients.
+ * Sends exactly one queued recipient. Vercel invokes this endpoint once per
+ * minute, which makes the delivery rate predictable and keeps the work within
+ * a serverless function's lifetime.
  */
 export async function processBroadcastQueue(
   db: SupabaseClient,
@@ -397,29 +399,27 @@ export async function processBroadcastQueue(
   let processedCount = 0;
   let completedCount = 0;
 
-  // A. Find all broadcasts that have pending recipients
+  // Select the oldest queued recipient globally so simultaneous broadcasts do
+  // not multiply the configured one-message-per-minute delivery rate.
   const { data: pendingRecipients } = await db
     .from('broadcast_recipients')
     .select('broadcast_id')
     .eq('status', 'pending')
-    .limit(200);
+    .order('created_at', { ascending: true })
+    .limit(1);
 
   if (!pendingRecipients || pendingRecipients.length === 0) {
     return { processed: 0, completed: 0 };
   }
 
-  const broadcastIds = [...new Set(pendingRecipients.map((r) => r.broadcast_id))];
-
-  for (const bId of broadcastIds) {
-    // Resume/drain any broadcast with pending recipients
-    await drainBroadcastQueue(db, bId, 200).catch((err) =>
-      console.error(
-        `[broadcast-cron] Error resuming drain for broadcast ${bId}:`,
-        err,
-      ),
-    );
-    processedCount++;
-  }
+  const broadcastId = pendingRecipients[0].broadcast_id;
+  await drainBroadcastQueue(db, broadcastId, 0, 1).catch((err) =>
+    console.error(
+      `[broadcast-cron] Error processing broadcast ${broadcastId}:`,
+      err,
+    ),
+  );
+  processedCount = 1;
 
   return { processed: processedCount, completed: completedCount };
 }

@@ -171,7 +171,7 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Drain recipients sequentially with 1 second pacing in after() background worker
+    // 6. Schedule background server drain in after() callback
     const broadcastId = broadcast.id;
     after(async () => {
       try {
