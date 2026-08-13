@@ -63,8 +63,28 @@ export async function POST(request: Request) {
           .in('id', uniqueIds);
         contacts = data ?? [];
       }
+    } else if (audience.type === 'custom_field' && audience.customField) {
+      // Custom field audience
+      const { fieldId, operator, value } = audience.customField;
+      let query = supabase
+        .from('contact_custom_values')
+        .select('contact_id')
+        .eq('custom_field_id', fieldId);
+
+      if (operator === 'is') query = query.eq('value', value);
+      else if (operator === 'is_not') query = query.neq('value', value);
+      else if (operator === 'contains') query = query.ilike('value', `%${value}%`);
+
+      const { data: matches } = await query;
+      if (matches && matches.length > 0) {
+        const contactIds = [...new Set(matches.map((m) => m.contact_id))];
+        const { data } = await supabase
+          .from('contacts')
+          .select('*')
+          .in('id', contactIds);
+        contacts = data ?? [];
+      }
     } else if (audience.type === 'csv' && Array.isArray(audience.csvContacts)) {
-      // Look up contacts by phone for CSV audience
       const phones = audience.csvContacts.map((c: any) => c.phone).filter(Boolean);
       if (phones.length > 0) {
         const { data } = await supabase
@@ -152,12 +172,17 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Schedule background server drain: 1 message per second
-    after(() => {
-      const admin = supabaseAdmin();
-      drainBroadcastQueue(admin, broadcast.id, 1000).catch((err) =>
-        console.error(`[broadcast-create] Error in background drain for ${broadcast.id}:`, err),
-      );
+    // 6. Schedule background server drain.
+    // CRITICAL: after() callback MUST return the promise so Next.js
+    // knows to keep the serverless function alive until it resolves.
+    const broadcastId = broadcast.id;
+    after(async () => {
+      try {
+        const admin = supabaseAdmin();
+        await drainBroadcastQueue(admin, broadcastId, 200);
+      } catch (err) {
+        console.error(`[broadcast-create] Error in background drain for ${broadcastId}:`, err);
+      }
     });
 
     return NextResponse.json({

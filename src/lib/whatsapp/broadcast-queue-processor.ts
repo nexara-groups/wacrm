@@ -450,7 +450,7 @@ async function checkAndFinalizeIfDone(
     .eq('broadcast_id', broadcastId)
     .eq('status', 'pending');
 
-  if (pendingCount === 0) {
+  if (pendingCount === 0 || pendingCount === null) {
     const { data: b } = await db
       .from('broadcasts')
       .select(
