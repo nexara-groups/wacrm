@@ -48,6 +48,7 @@ export function resolveVariables(
 
 /**
  * Process a single pending recipient for a given broadcast.
+ * Stamps recipient row with 'sent' or 'failed' and returns result.
  */
 export async function processSingleRecipient(
   db: SupabaseClient,
@@ -295,18 +296,20 @@ export async function processSingleRecipient(
 }
 
 /**
- * Drain all pending recipients for a single broadcast on the server side,
- * sending 1 message per minute (default 60,000ms delay) between recipients.
- * Designed to run in background (e.g. Next.js after() or server worker).
+ * Drain all pending recipients for a single broadcast on the server side.
+ * Sends recipients one by one with a 1-second delay between sends so Meta
+ * is not rate limited, but all messages complete quickly in the background.
  */
 export async function drainBroadcastQueue(
   db: SupabaseClient,
   broadcastId: string,
-  delayMs = 60000,
+  delayMs = 1000,
+  maxBatchSize = 50,
 ): Promise<void> {
   console.log(`[broadcast-drain] Starting background drain for broadcast ${broadcastId}`);
+  let processedInThisRun = 0;
 
-  while (true) {
+  while (processedInThisRun < maxBatchSize) {
     // 1. Fetch current broadcast status — stop if cancelled, deleted, or paused
     const { data: broadcast } = await db
       .from('broadcasts')
@@ -332,6 +335,8 @@ export async function drainBroadcastQueue(
       break;
     }
 
+    processedInThisRun++;
+
     // 3. Check remaining pending count
     const { count: remainingPending } = await db
       .from('broadcast_recipients')
@@ -344,17 +349,33 @@ export async function drainBroadcastQueue(
       break;
     }
 
-    // 4. Wait 60 seconds before sending the next recipient
-    console.log(
-      `[broadcast-drain] Waiting ${delayMs / 1000}s before next send for broadcast ${broadcastId} (${remainingPending} remaining)...`,
-    );
+    // 4. Short 1s pause between sends (smooth rate control, no function timeouts)
     await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  // If there are still pending recipients left after maxBatchSize, trigger next batch asynchronously
+  const { count: finalPending } = await db
+    .from('broadcast_recipients')
+    .select('*', { count: 'exact', head: true })
+    .eq('broadcast_id', broadcastId)
+    .eq('status', 'pending');
+
+  if (finalPending && finalPending > 0) {
+    console.log(
+      `[broadcast-drain] ${finalPending} recipients remaining for ${broadcastId}, scheduling next batch...`,
+    );
+    // Chain execution via cron endpoint asynchronously
+    fetch(`${process.env.NEXT_PUBLIC_SITE_URL || ''}/api/broadcasts/cron`, {
+      method: 'POST',
+    }).catch(() => {});
+  } else {
+    await checkAndFinalizeIfDone(db, broadcastId);
   }
 }
 
 /**
- * Sweeps active sending broadcasts and processes 1 recipient per broadcast.
- * Called by periodic cron pinger.
+ * Sweeps active sending broadcasts and drains pending recipients.
+ * Called by periodic cron pinger or background trigger.
  */
 export async function processBroadcastQueue(
   db: SupabaseClient,
@@ -374,7 +395,7 @@ export async function processBroadcastQueue(
 
   for (const broadcast of sendingBroadcasts) {
     // Resume/drain any active broadcast stuck in 'sending' status
-    drainBroadcastQueue(db, broadcast.id, 60000).catch((err) =>
+    drainBroadcastQueue(db, broadcast.id, 1000).catch((err) =>
       console.error(
         `[broadcast-cron] Error resuming drain for broadcast ${broadcast.id}:`,
         err,

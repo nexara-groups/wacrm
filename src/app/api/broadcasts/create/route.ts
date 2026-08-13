@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server';
 import { supabaseAdmin } from '@/lib/automations/admin-client';
 import { drainBroadcastQueue } from '@/lib/whatsapp/broadcast-queue-processor';
 
+export const maxDuration = 60;
+
 export async function POST(request: Request) {
   try {
     const supabase = await createClient();
@@ -150,10 +152,10 @@ export async function POST(request: Request) {
       }
     }
 
-    // 6. Schedule background server drain: 1 message every 60s
+    // 6. Schedule background server drain: 1 message per second
     after(() => {
       const admin = supabaseAdmin();
-      drainBroadcastQueue(admin, broadcast.id, 60000).catch((err) =>
+      drainBroadcastQueue(admin, broadcast.id, 1000).catch((err) =>
         console.error(`[broadcast-create] Error in background drain for ${broadcast.id}:`, err),
       );
     });
