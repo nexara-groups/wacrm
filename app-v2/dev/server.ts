@@ -62,33 +62,25 @@ async function seed(): Promise<void> {
     [ACCOUNT_ID, "Demo Account", ownerId, now, now],
   );
 
-  // NOTE: `contacts` here is the base table from 0005_contact_deliverability.sql.
-  // 0007_contacts.sql — which adds display_name, tags and custom fields — was
-  // never written (its track was cut off mid-run), so the contact's name is
-  // carried in this harness only, not in the schema. Removing this comment
-  // without adding that migration would hide a real gap.
   for (const row of SEED) {
     await db.query(
       `insert into contacts
-         (id, account_id, phone, consent_state, deliverability_state,
+         (id, account_id, phone, display_name, consent_state, deliverability_state,
           suppressed_reason_code, suppression_strikes, opt_out_scope, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, 0, 'all', $7, $8)`,
-      [randomUUID(), ACCOUNT_ID, row.phone, row.consent, row.deliverability, row.reasonCode, now, now],
+       values ($1, $2, $3, $4, $5, $6, $7, 0, 'all', $8, $9)`,
+      [randomUUID(), ACCOUNT_ID, row.phone, row.name, row.consent, row.deliverability, row.reasonCode, now, now],
     );
   }
 }
 
-/** Seeded display names, keyed by phone — see the note in `seed`. */
-const NAME_BY_PHONE = new Map(SEED.map((s) => [s.phone, s.name]));
-
 /** Reads contacts through SQL and maps them to the shared `Contact` entity. */
 async function loadContacts(): Promise<readonly Contact[]> {
   const { rows } = await db.query<Record<string, string | number | null>>(
-    `select id, account_id, phone, consent_state, deliverability_state,
+    `select id, account_id, phone, display_name, email, consent_state, deliverability_state,
             suppressed_reason_code, suppression_strikes, opt_out_scope, created_at, updated_at
        from contacts
       where account_id = $1
-      order by phone`,
+      order by display_name`,
     [ACCOUNT_ID],
   );
   return rows.map(
@@ -97,8 +89,8 @@ async function loadContacts(): Promise<readonly Contact[]> {
         id: String(r.id),
         accountId: String(r.account_id),
         phoneNumber: String(r.phone),
-        displayName: NAME_BY_PHONE.get(String(r.phone)) ?? null,
-        email: null,
+        displayName: r.display_name === null ? null : String(r.display_name),
+        email: r.email === null ? null : String(r.email),
         consentState: String(r.consent_state),
         optedOutAt: null,
         optOutSource: null,
