@@ -51,7 +51,7 @@ The tiering exists so that *not every staff member doing support work needs the 
 | Tier | Adds | Cross-account reports & activity |
 |---|---|---|
 | `platform_support` | See **all** accounts: metadata, usage, billing state, credit balances, delivery health, error rates, quality ratings, activity stream, audit logs | ✅ full |
-| `platform_admin` | + credit adjustments, suspend/reactivate accounts, clear suppressions, resend/requeue, **time-boxed impersonation**, message-content access with justification | ✅ full |
+| `platform_admin` | + credit adjustments, suspend/reactivate accounts, clear suppressions, resend/requeue, **time-boxed impersonation**, open a compliance case (§7) | ✅ full |
 | `platform_superadmin` | + grant/revoke platform roles, platform configuration | ✅ full |
 
 `platform_superadmin` is named to avoid collision with the tenant-scoped `owner` role — the two are on different axes and must never read as comparable.
@@ -64,11 +64,13 @@ Worth being precise, because "restricted tier" is easy to misread as "cannot see
 |---|---|
 | Cross-account **reports, volumes, error rates, credit balances, delivery health, quality ratings, activity** | ❌ **not gated** — available at every tier, for every account |
 | Mutating tenant data (credits, suspension, suppression) | ✅ `platform_admin`+ |
-| Reading a customer's **message content** | ✅ `platform_admin`+, separate permission, justification required, audited |
+| Reading a customer's **message content** | ✅ **only inside an open compliance case**, scoped to that case's evidence — never browsable at any tier (§7) |
 | Impersonation | ✅ `platform_admin`+, time-boxed, consented, recorded |
 | Granting platform roles | ✅ `platform_superadmin` only, 2-person rule (§5) |
 
 Aggregate oversight touches no message content, so it carries none of that liability. Coupling the two would mean every routine report view inherits the risk of reading private conversations — hence the split. Oversight itself is unrestricted at all three tiers.
+
+**No tier — including `platform_superadmin` — can browse customer conversations.** There is no "open this account's inbox" capability anywhere in the console. Content is reachable only through a compliance case, scoped to the specific evidence that case is about. See §7.
 
 ---
 
@@ -118,8 +120,9 @@ Platform roles granted only by platform_superadmin, with a 2-person rule
 Every cross-tenant read audited: who · what account · what data · when · why
 Impersonation: time-boxed (≤60 min), reason required, banner visible to the
   impersonated user, full session recorded, auto-expires
-Message content access: separate permission, denied to platform_support,
-  justification required, retained in the audit log
+Message content: NO browsing capability at any tier. Reachable only inside
+  an approved, scoped, expiring compliance case (§7) — 2-person rule,
+  every read logged to the case
 Audit log append-only and immutable — not writable by any platform role
 Separate credential path from tenant auth; platform sessions shorter-lived
 Rate-limited and alerted: bulk cross-tenant reads page someone
@@ -155,7 +158,64 @@ account_rollup_daily                     -- shared with reporting
 
 ---
 
-## 7. Build sequencing
+## 7. Compliance cases — answering Meta
+
+Meta does raise queries, and they must be answerable: a user complaint or report, a quality-rating investigation, a policy-violation review, a flagged template, a blocked number dispute, or a legal/law-enforcement request. Answering usually requires **specific evidence** — what was sent to this number, under which template, when, with what consent.
+
+So content access is needed. But "Nexara staff can read customer conversations" and "Nexara can answer a Meta query" are very different powers, and only the second is actually required.
+
+**Design: no browsing, only case-scoped retrieval.**
+
+```
+Meta raises a query
+  → platform_admin opens a compliance case
+       · external reference (Meta case / complaint id)
+       · affected account + scope: specific message ids, one contact,
+         one template, or a bounded date range — never "this account"
+       · reason, category, requesting party
+  → second platform_admin or platform_superadmin approves      (2-person rule)
+  → case opens with a TTL (default 7 days, max 30)
+  → content is readable ONLY within that declared scope, only while open
+  → every read appended to the case record
+  → evidence export watermarked with case id + actor
+  → case closes (or auto-expires) → access ends immediately
+```
+
+Properties that matter:
+- **Scope is declared before access, not after.** You state which messages you need and why, then get them. You cannot open a case for "account X" and then read everything in it.
+- **No standing access.** Between cases, no one at Nexara can read any customer's messages. The capability does not exist in an idle state.
+- **Two-person rule.** The person who wants the data is not the person who authorises it — the same rule already applied to platform-role grants (§5).
+- **Auto-expiry.** Cases die on a timer. Forgetting to close one does not leave a permanent hole.
+- **The case record is the audit trail.** Every read sits inside it, so "why did staff read this conversation" always has an answer attached to a Meta reference.
+- **Tenant-visible.** The affected account sees that a compliance case touched their data, with the Meta reference and category. They may not see law-enforcement cases where disclosure is legally restricted — that exception must be explicit and narrow, not a general carve-out.
+
+### Data model
+
+```
+compliance_cases
+  id · external_ref · category · account_id
+  · scope_type (message_ids | contact | template | date_range)
+  · scope_value (jsonb)
+  · opened_by · reason · approved_by · approved_at
+  · expires_at · closed_at · closed_by · outcome
+  · tenant_notified_at · disclosure_restricted (bool)
+
+compliance_case_reads               -- append-only
+  id · case_id · actor_user_id · resource_type · resource_id · read_at
+
+compliance_case_exports
+  id · case_id · actor_user_id · format · watermark · exported_at · row_count
+```
+
+A case with no `approved_by` grants nothing. Expiry is enforced at query time, not by a cleanup job — an expired case denies access even if a row still says open.
+
+### What this does not cover
+
+Aggregate metadata — delivery rates, error codes, suppression counts, template statuses, quality ratings — needs no case. That is the §3 console, available at every tier, and it answers most Meta questions on its own. The case machinery is for the minority of queries that genuinely need message content.
+
+---
+
+## 8. Build sequencing
 
 Nothing here blocks the vertical slice, and the slice should not wait on it. But two pieces must be designed in from the start because retrofitting them is expensive:
 
@@ -164,6 +224,7 @@ Nothing here blocks the vertical slice, and the slice should not wait on it. But
 | **With the foundation** (not deferrable) | `Principal.platformRole` dimension in the RBAC model; `platform_audit_log` table + write path |
 | **After the vertical slice** | Fleet overview, account detail, activity stream (read-only `platform_support` tier) |
 | **After billing gates clear** | Billing ops, credit adjustment |
+| **With Meta go-live** | Compliance cases (§7) — needed the first time Meta raises a query, so not deferrable past launch |
 | **Last** | Impersonation — highest risk, needs the audit and consent machinery proven first |
 
 Retrofitting a second principal dimension into an RBAC model that has shipped means touching every authorization call site. Adding an audit log after the fact means the early months have no record. Both are cheap now and expensive later — hence "not deferrable" even though the console itself is.

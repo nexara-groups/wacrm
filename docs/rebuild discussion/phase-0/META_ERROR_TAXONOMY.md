@@ -103,6 +103,74 @@ Default to `TRANSIENT` with a **low** retry cap (2), log the raw payload, and su
 
 ---
 
+## 3b. Opt-out / DND — suppression that is not an error
+
+An error code is not the only reason to stop sending to a number. A person who replies **STOP** never produces a Meta error at all — the message delivers perfectly. But sending to them again is worse than a technical failure: it is a compliance breach and it damages the account's quality rating, which Meta uses to throttle the whole WABA.
+
+So suppression has **two independent sources**:
+
+| Source | Trigger | Reversible by |
+|---|---|---|
+| **Technical** | `PERMANENT_NUMBER` error code — not on WhatsApp, invalid number | Operator (number may be ported or WhatsApp installed later) |
+| **User intent (opt-out / DND)** | Person asked to stop, or blocked the business | **Only the person** — never by an operator |
+
+This distinction is load-bearing. An operator clearing a technical suppression is routine housekeeping. An operator clearing an opt-out is overriding a customer's explicit wish, and in most jurisdictions that is the thing regulators fine you for. **The two must not share a "clear suppression" button.**
+
+### Opt-out triggers
+
+| Trigger | Detection |
+|---|---|
+| Reply matching a stop keyword | Inbound message text matched against a per-account, per-language keyword list (`STOP`, `UNSUBSCRIBE`, `OPT OUT`, plus local-language equivalents — this matters for an India-first product) |
+| Template quick-reply "Stop promotions" | Button payload — the reliable path, since Meta requires opt-out affordances on marketing templates |
+| User blocks the business | Inferred from repeated delivery failure after prior success, plus quality-rating signals. Treat as opt-out, not technical. |
+| Operator/importer marks Do-Not-Contact | Explicit flag at CSV import or on the contact record |
+
+Keyword matching must be **per-account and per-language configurable**, not a hardcoded English list. A Telugu or Hindi "stop" must work.
+
+### Model
+
+```
+contacts
+  + consent_state       TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (consent_state IN ('unknown','opted_in','opted_out','do_not_contact'))
+  + opted_out_at        TIMESTAMPTZ
+  + opt_out_source      TEXT   -- keyword | quick_reply | inferred_block | operator | import
+  + opt_out_evidence    TEXT   -- the actual inbound message id, for disputes
+```
+
+`consent_state` is **separate from `deliverability_state`** (§4). A number can be technically reachable and opted out; both must block a send, for different reasons, with different messages and different reversal rules.
+
+### Scope
+
+Opt-out is **per account**, not global. A person opting out of one client's marketing has not opted out of another's — they are different businesses with different relationships. Enforce with `account_id` scoping like everything else.
+
+Category scoping (opt out of marketing but still receive order updates) is the correct long-term model and matches how Meta categorises templates. **Design the column to allow it; do not build it now** — `opt_out_scope` defaulting to `all`.
+
+### Plain-English messages
+
+| State | Shown to user |
+|---|---|
+| `opted_out` | "This person asked to stop receiving messages. You can't message them until they contact you again." |
+| `do_not_contact` | "This contact is marked do-not-contact and has been skipped." |
+| Audience excluded | "38 contacts skipped — they've opted out of messages." |
+
+### Rules
+
+```
+Opt-out blocks marketing/broadcast sends unconditionally
+Opt-out is NOT clearable by any operator — only a new inbound message from
+  that person, or an explicit re-opt-in, restores sending
+Re-opt-in must be evidenced (inbound message id recorded)
+Opt-out check runs BEFORE credit reservation — an opted-out number
+  never consumes credits
+Opt-out survives contact re-import — matching by phone, never reset by CSV
+Opt-out is evidence for Meta compliance cases (SUPER_ADMIN_CONSOLE §7)
+```
+
+That second-to-last rule is the one that gets missed: a CSV re-import that silently resets consent state re-spams everyone who opted out. Match on phone number and preserve consent on import, always.
+
+---
+
 ## 4. Number suppression — data model
 
 ```
@@ -157,6 +225,37 @@ Suppression must be reversible — numbers get ported, people install WhatsApp. 
 
 ---
 
+## 4b. Where the plain-English message actually appears
+
+A good message table is worthless if the user never sees it. Every failure must surface where the user is already looking, in their words — never Meta's.
+
+| Surface | What the user sees |
+|---|---|
+| **Broadcast report** | Failures grouped **by reason**, not a flat list of 200 rows: *"142 couldn't receive WhatsApp messages · 38 opted out · 12 need an approved template · 8 will retry automatically"*. Each group expandable to the contacts. |
+| **Contact detail** | A status line with the reason and date: *"Can't receive WhatsApp messages — stopped sending on 14 Mar."* |
+| **Inbox / single send** | Composer blocked with the reason inline, before the user types. Not an error after hitting send. |
+| **Audience preview** | Before sending: *"3,142 recipients · 180 will be skipped (can't receive / opted out)"* — so the number they see is the number that goes out. |
+| **Notification** | `PERMANENT_CONFIG` failures notify the account owner, since only they can fix a token, template or billing problem. |
+| **Suppressed contacts list** | Filterable, with reason, date and evidence. |
+
+### Two message fields, not one
+
+Each code carries both `layman_message` (customer-facing, no jargon, no codes) and `operator_hint` (what to actually do about it, for the account owner and the platform console). *"This template is paused because of poor quality ratings"* is the message; *"Meta paused template X on date Y — quality rating dropped to RED; edit or replace"* is the hint.
+
+Never show the raw Meta string or the numeric code in normal UI. Keep both in the record and expose them in a "technical details" disclosure and in the platform console — support needs them, users do not.
+
+### Writing rules
+
+```
+No Meta error codes in user-facing text
+No jargon: no "WABA", "hydrated", "parameter", "subcode", "24-hour window"
+Say what happened, then what happens next — and whether the user must act
+Never blame the user for Meta-side problems
+Localise: message text is translatable (next-intl is already in the stack)
+```
+
+---
+
 ## 5. Where this lives in the architecture
 
 ```
@@ -192,6 +291,11 @@ Suppressed contact consumes zero credits (pre-send guard fires first)
 Webhook-delivered failure suppresses identically to send-response failure
 Duplicate webhook for the same message suppresses once, logs once (idempotent)
 Suppression is tenant-scoped — account A cannot see or affect account B's
+Opt-out survives CSV re-import (matched by phone, consent preserved)
+Opt-out is not clearable by any operator role
+Opt-out is per account — opting out of A does not affect B
+Stop-keyword matching works in configured non-English languages
+No user-facing string contains a numeric Meta code or raw Meta text
 ```
 
 ---

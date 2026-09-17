@@ -1,8 +1,8 @@
 # PLAN_REVIEW_DELTA — Changes Required to the Rebuild Plan
 
-Review of the existing plan (v5 architecture, v6 decisions, Phase-0 docs) against three new inputs: **full Supabase exit on cost grounds**, **Meta error handling + number suppression**, **platform super-admin console**.
+Review of the existing plan (v5 architecture, v6 decisions, Phase-0 docs) against the new inputs: **full Supabase exit on cost grounds**, **Meta error handling + opt-out suppression**, **platform super-admin console with Meta compliance evidence**, **per-account sub-user seat caps**.
 
-Verdict: the plan's **architecture is sound and needs no structural change.** The adapter model already absorbs the Supabase exit — that is exactly what it was built for. Nine changes are required, of which three are substantive and six are corrections or additions.
+Verdict: the plan's **architecture is sound and needs no structural change.** The adapter model already absorbs the Supabase exit — that is exactly what it was built for. Twelve changes are required, of which six are substantive and six are corrections or additions.
 
 ---
 
@@ -28,6 +28,28 @@ The gate itself remains **PENDING** and still blocks ledger/settlement code. Not
 Neither v5, v6, nor any Phase-0 doc addresses Meta error classification, retry policy, or number suppression. Verified against the current code, this is a real production gap: raw Meta strings are shown to users, and failed numbers are retried forever (`META_ERROR_TAXONOMY.md` §1).
 
 It is also a **billing correctness** issue, which makes it a v6 concern rather than a polish item. Without a pre-send suppression guard, a number that can never receive messages consumes a credit reservation on every broadcast. Add the suppression check as an explicit precondition to reservation in `CREDITS_BILLING_DESIGN.md`.
+
+### 3b. Opt-out / DND is a separate suppression axis from delivery failure
+
+`META_ERROR_TAXONOMY.md` §3b. A person who replies STOP produces **no Meta error** — the message delivers fine. But re-sending is a compliance breach and it degrades the WABA quality rating, which throttles the whole account.
+
+So `consent_state` is modelled separately from `deliverability_state`. The rule that matters: **an operator may clear a technical suppression but never an opt-out.** Only the person can reverse their own opt-out. Sharing one "clear suppression" button between the two is how a regulator-facing incident happens. Opt-out is also per-account (opting out of one client is not opting out of another) and must survive CSV re-import.
+
+### 3c. Platform staff must never be able to browse customer messages
+
+Revised from the first draft of `SUPER_ADMIN_CONSOLE.md`. "Message content access with justification" was still a standing capability. It is now removed at **every** tier including `platform_superadmin`, and replaced by **compliance cases** (§7 of that doc): scope declared up front, two-person approval, TTL, every read logged to the case, tenant notified.
+
+This is what makes Meta queries answerable without Nexara holding permanent read access to every customer's conversations. Between cases the capability does not exist in an idle state. Aggregate metadata — which answers most Meta questions by itself — needs no case.
+
+### 3d. Seat caps do not exist and must land with the organizations module
+
+`SEAT_LIMITS.md`. Verified: `profiles.account_id` + `account_invitations` with **no cap column, check, or enforcement anywhere**. Accounts can invite unbounded members today.
+
+The cap resolves `account.seat_limit_override ?? plan.included_seats ?? platform default`, so a plan change lifts every account on it while single accounts keep an audited exception path. Two decisions that prevent support tickets: **pending invitations count** (else the cap is decorative), and **downgrade never auto-removes members** (grandfather into `over_seat_limit`, block growth until usage drops).
+
+Concurrent invitation acceptance at the cap boundary is the same hot-row concurrency class as the credit wallet — it belongs in the DB benchmark's contract tests.
+
+Also flagged: the current role vocabulary (`owner`/`admin`/`agent`/`viewer`) differs from the framework's (`owner`/`admin`/`manager`/`member`). The organizations port must reconcile them rather than carry both.
 
 ---
 
@@ -68,6 +90,10 @@ The doc flags that `.env.local` may point at dev, not production, and that the l
 | `MetaErrorClassifier` + code table + suppression state machine | **BUILD now** — pure domain, no gate dependency |
 | Suppression → credit-reservation guard | **GATED** — touches reservation code, both hard gates |
 | `Principal.platformRole` + `platform_audit_log` | **BUILD now** — expensive to retrofit |
+| Opt-out / `consent_state` + stop-keyword handling | **BUILD now** — compliance, no gate dependency |
+| Seat cap: `resolved_seat_limit` + `SeatService` + invite/accept enforcement | **BUILD now** — with the organizations module |
+| Compliance cases (Meta query evidence) | **BUILD by Meta go-live** — needed the first query |
+| Purchasable extra seats / overage charging | **GATED** — with billing |
 | Platform console UI (fleet, activity, health) | **DEFER** — after the vertical slice |
 | Impersonation | **DEFER** — last; needs audit + consent machinery proven |
 
@@ -102,6 +128,7 @@ Worth stating explicitly, since the temptation with three new requirements is to
 | **SUPABASE_EXIT_PLAN.md** | **NEW** — DONE |
 | **META_ERROR_TAXONOMY.md** | **NEW** — DONE (design); codes to verify against live Meta docs |
 | **SUPER_ADMIN_CONSOLE.md** | **NEW** — DONE (design) |
+| **SEAT_LIMITS.md** | **NEW** — DONE (design) |
 
 ## Immediate actions, in order
 

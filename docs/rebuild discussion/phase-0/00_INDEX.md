@@ -16,7 +16,8 @@ Final plan split across files. v6 (`../Nexara_WACRM_Rebuild_Architecture_v6_deci
 | [SUPABASE_EXIT_PLAN.md](SUPABASE_EXIT_PLAN.md) | Full Supabase removal — verified surface + Nexara replacement map + sequence | DONE |
 | [META_ERROR_TAXONOMY.md](META_ERROR_TAXONOMY.md) | Meta error classification, plain-English messages, number suppression | DONE (design); codes to verify vs live Meta docs |
 | [SUPER_ADMIN_CONSOLE.md](SUPER_ADMIN_CONSOLE.md) | Platform operator console — cross-tenant visibility + platform principal | DONE (design) |
-| [PLAN_REVIEW_DELTA.md](PLAN_REVIEW_DELTA.md) | Review of the plan against the three new inputs; required changes | DONE |
+| [SEAT_LIMITS.md](SEAT_LIMITS.md) | Sub-users per account + configurable seat cap, plan-driven with per-account override | DONE (design) |
+| [PLAN_REVIEW_DELTA.md](PLAN_REVIEW_DELTA.md) | Review of the plan against the the new inputs; required changes | DONE |
 
 ## Two hard gates before any credit-ledger / settlement code
 1. **Meta commercial gate** — Solution Partner + credit-line eligibility (see META_COMMERCIAL_BILLING_MODEL). Until confirmed, build the **Tech-Provider fallback** billing model.
