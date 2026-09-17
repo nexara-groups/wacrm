@@ -91,9 +91,11 @@ for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
   // from the database into application code, this guard is the mitigation;
   // it has to actually check.
   //
-  // A statement that genuinely must cross tenants (platform-admin console,
-  // per SUPER_ADMIN_CONSOLE.md §4) opts out with an explicit `cross-tenant:`
-  // marker naming the reason, so every exemption is greppable and reviewable.
+  // A statement that genuinely cannot carry the column opts out with an
+  // explicit `tenant-scope-exempt: <reason>` marker, so every exemption is
+  // greppable and reviewable. Two legitimate cases: a deliberate cross-tenant
+  // read (platform-admin console, SUPER_ADMIN_CONSOLE.md §4), and a write to
+  // a tenant-ROOT table such as `accounts`, whose tenant column is its own id.
   if (norm.includes("/infrastructure/")) {
     for (const block of text.match(/`[^`]*`/g) ?? []) {
       const withoutComments = block
@@ -103,7 +105,7 @@ for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
       const looksLikeSql =
         /\b(select|insert\s+into|update|delete)\b/.test(sql) && /\b(from|into|set)\b/.test(sql);
       const scoped = sql.includes("account_id") || sql.includes("tenant_id");
-      const exempt = block.toLowerCase().includes("cross-tenant:");
+      const exempt = block.toLowerCase().includes("tenant-scope-exempt:");
       if (looksLikeSql && !scoped && !exempt) {
         violations.push(`  x ${norm} has a SQL statement that is not scoped to account_id`);
       }
