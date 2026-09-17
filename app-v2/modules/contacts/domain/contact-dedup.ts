@@ -85,7 +85,7 @@ export interface DedupGroup<T extends HasPhoneNumber> {
 /**
  * Finds groups of contacts within `contacts` that collide on normalised
  * phone number. In steady state this should never find anything — the
- * `(account_id, phone)` unique index (see db/migrations/*/0007_contacts.sql)
+ * `(account_id, phone)` unique index (see db/migrations/{d1,postgres}/0007_contacts.sql)
  * prevents it at insert time — but it exists as a pure, testable audit
  * utility for legacy/imported data that predates the constraint, and as
  * the building block CSV import matching is built on.

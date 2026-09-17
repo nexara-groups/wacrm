@@ -355,7 +355,8 @@ export function planContactImport<T extends ExistingImportContact>(
       dncCell !== null
         ? validateCustomFieldValue({ type: "boolean", label: "do_not_contact", options: null }, dncCell)
         : null;
-    const requestedDoNotContact = dncResult !== null && dncResult.ok ? dncResult.value.value : false;
+    const requestedDoNotContact =
+      dncResult !== null && dncResult.ok ? dncResult.value.value === true : false;
 
     const customFields = new Map<string, { readonly label: string; readonly raw: string }>();
     for (const col of headerMap.customFieldColumns) {

@@ -7,7 +7,7 @@
  * in `infrastructure/onboarding-repository.ts`; the Meta Graph API is
  * implemented in `infrastructure/meta-business-provider.ts`.
  *
- * Table mapping (see `db/migrations/*/0010_meta_onboarding.sql`):
+ * Table mapping (see `db/migrations/{d1,postgres}/0010_meta_onboarding.sql`):
  *  onboarding_sessions         -> OnboardingSessionRepositoryPort
  *  meta_business_connections   -> MetaConnectionRepositoryPort
  *  onboarding_events           -> OnboardingEventRepositoryPort

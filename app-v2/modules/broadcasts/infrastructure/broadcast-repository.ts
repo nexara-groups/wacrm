@@ -260,6 +260,7 @@ function toBroadcastRecipient(row: RecipientRow): BroadcastRecipient {
     messageId: null,
     status: asRecipientStatus(row.status),
     errorCode: row.error_code,
+    errorMessage: row.error_message,
     disposition: asDisposition(row.disposition),
     attemptCount: row.attempt_count,
     nextAttemptAt: row.next_attempt_at,

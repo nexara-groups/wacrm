@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { classifyMetaFailure, toProviderFailure } from "./meta-error-mapping";
-import { parseWebhookEnvelope, type WebhookEnvelope } from "./webhook-parser";
+import { parseWebhookEnvelope, type WebhookEnvelope, type WebhookStatus } from "./webhook-parser";
 
-function envelopeWithStatus(status: Record<string, unknown>): WebhookEnvelope {
+function envelopeWithStatus(status: WebhookStatus): WebhookEnvelope {
   return {
     object: "whatsapp_business_account",
     entry: [
@@ -139,6 +139,7 @@ describe("parseWebhookEnvelope — status updates", () => {
       errors: [{ code: 131026, title: "Message undeliverable", message: "Message undeliverable" }],
     });
     const [event] = parseWebhookEnvelope(envelope);
+    if (!event) throw new Error("expected one parsed event");
     expect(event.kind).toBe("status_update");
     if (event.kind !== "status_update") throw new Error("unreachable");
     expect(event.classification?.disposition).toBe("PERMANENT_NUMBER");
@@ -188,6 +189,7 @@ describe("THE integration point — webhook failures classify identically to sen
         errors: [{ code, title: "some title", message: "some message" }],
       });
       const [webhookEvent] = parseWebhookEnvelope(webhookEnvelope);
+      if (!webhookEvent) throw new Error("expected one parsed event");
       if (webhookEvent.kind !== "status_update") throw new Error("unreachable");
 
       // Send-response path: infrastructure/meta-whatsapp-provider.ts's shape

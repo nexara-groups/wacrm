@@ -64,10 +64,12 @@ for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
     }
   }
 
-  // Rule 2 — service layers contain no SQL and no DB-layer access. Applies to
-  // modules/** and any module's application/ layer.
-  const isServiceLayer =
-    norm.startsWith(FEATURE_DIR + "/") || /^src\/modules\/[^/]+\/application\//.test(norm);
+  // Rule 2 — service layers contain no SQL and no DB-layer access. This is the
+  // application/presentation layer ONLY: a module's infrastructure/ layer is
+  // exactly where SQL belongs, so it must not be caught here.
+  const isServiceLayer = new RegExp(
+    `^${FEATURE_DIR}/[^/]+/(application|presentation|domain)/`,
+  ).test(norm);
   if (isServiceLayer) {
     if (/from\s+["'][^"']*core\/database/.test(text)) {
       violations.push(`  x ${norm} imports the database layer (use a repository)`);
@@ -77,14 +79,33 @@ for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
     }
   }
 
-  // Rule 3 — tenant safety: SQL in infrastructure must filter by tenant_id.
+  // Rule 3 — tenant safety: every SQL statement in an infrastructure layer must
+  // scope to the tenant column. This codebase's tenant column is `account_id`
+  // (see 0001_identity.sql); `tenant_id` is accepted for framework-level tables
+  // that predate it.
+  //
+  // SQL comments are STRIPPED before the check. Without that, a statement can
+  // satisfy this rule with a comment mentioning the column while filtering on
+  // nothing — which is precisely what happened before this was tightened, and
+  // it made the rule vacuous. Since the Supabase exit moves 163 RLS policies
+  // from the database into application code, this guard is the mitigation;
+  // it has to actually check.
+  //
+  // A statement that genuinely must cross tenants (platform-admin console,
+  // per SUPER_ADMIN_CONSOLE.md §4) opts out with an explicit `cross-tenant:`
+  // marker naming the reason, so every exemption is greppable and reviewable.
   if (norm.includes("/infrastructure/")) {
     for (const block of text.match(/`[^`]*`/g) ?? []) {
-      const sql = block.toLowerCase();
+      const withoutComments = block
+        .replace(/--[^\n]*/g, " ")
+        .replace(/\/\*[\s\S]*?\*\//g, " ");
+      const sql = withoutComments.toLowerCase();
       const looksLikeSql =
         /\b(select|insert\s+into|update|delete)\b/.test(sql) && /\b(from|into|set)\b/.test(sql);
-      if (looksLikeSql && !sql.includes("tenant_id") && !sql.includes("no-tenant")) {
-        violations.push(`  x ${norm} has a SQL statement with no tenant_id filter`);
+      const scoped = sql.includes("account_id") || sql.includes("tenant_id");
+      const exempt = block.toLowerCase().includes("cross-tenant:");
+      if (looksLikeSql && !scoped && !exempt) {
+        violations.push(`  x ${norm} has a SQL statement that is not scoped to account_id`);
       }
     }
   }

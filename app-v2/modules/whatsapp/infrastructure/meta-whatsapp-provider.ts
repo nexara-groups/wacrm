@@ -231,7 +231,7 @@ export class MetaWhatsAppProvider implements WhatsAppProvider {
     const form = new FormData();
     form.append("messaging_product", "whatsapp");
     form.append("type", input.mimeType);
-    const blob = new Blob([input.bytes], { type: input.mimeType });
+    const blob = new Blob([new Uint8Array(input.bytes)], { type: input.mimeType });
     form.append("file", blob, input.fileName ?? "upload");
 
     return this.request(

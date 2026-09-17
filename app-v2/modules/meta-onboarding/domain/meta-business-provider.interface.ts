@@ -44,7 +44,7 @@ export interface ExchangedToken {
   /**
    * The raw bearer token. NEVER persist this value directly — see
    * `application/ports.ts`'s `SecretStorePort` and
-   * `db/migrations/*/0010_meta_onboarding.sql`'s `access_token_ref` column
+   * `db/migrations/{d1,postgres}/0010_meta_onboarding.sql`'s `access_token_ref` column
    * comment. This type exists only to move the value from this port to the
    * secret store in the same request; nothing downstream of that call
    * should still be holding it.

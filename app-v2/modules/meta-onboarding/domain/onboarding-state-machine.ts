@@ -34,7 +34,7 @@ import { AppError } from "@shared/errors";
 // ---------------------------------------------------------------------------
 
 /** Exhaustive tuple of every onboarding state — the single source of truth
- *  for the `OnboardingState` union below and for `db/migrations/*/0010_meta_onboarding.sql`'s
+ *  for the `OnboardingState` union below and for `db/migrations/{d1,postgres}/0010_meta_onboarding.sql`'s
  *  `CHECK (state IN (...))` constraint, which must be kept in sync by hand
  *  (SQL has no way to import a TypeScript const). */
 export const ONBOARDING_STATES = [

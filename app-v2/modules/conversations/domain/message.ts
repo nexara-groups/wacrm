@@ -144,7 +144,19 @@ export function applyMessageStatusUpdate(
   }
 
   if (incoming === "failed") {
-    // current is pending | sent | delivered here (replied/failed handled above).
+    // The comment above claimed `current` could only be pending | sent |
+    // delivered here, but `read` also reaches this branch — only `failed`
+    // and `replied` are rejected as terminal above. That let a late `failed`
+    // regress a message the customer demonstrably read, which is the exact
+    // contradiction this function documents as illegal.
+    if (current === "read") {
+      return err(
+        AppError.validation(
+          "'read' confirms delivery; a later 'failed' report is contradictory and is rejected",
+        ),
+      );
+    }
+    // current is pending | sent | delivered here.
     return ok("failed");
   }
 

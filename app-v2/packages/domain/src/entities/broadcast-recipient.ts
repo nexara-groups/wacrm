@@ -19,6 +19,8 @@ export interface BroadcastRecipient {
   readonly status: RecipientStatus;
   /** e.g. "131026" — META_ERROR_TAXONOMY.md §4 `broadcast_recipients.error_code`. */
   readonly errorCode: string | null;
+  /** The classifier's customer-facing copy (§4b) — never Meta's raw string. */
+  readonly errorMessage: string | null;
   readonly disposition: Disposition | null;
   readonly attemptCount: number;
   readonly nextAttemptAt: ISODateString | null;

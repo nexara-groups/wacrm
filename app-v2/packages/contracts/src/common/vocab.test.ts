@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
   BroadcastStatus as DomainBroadcastStatus,
@@ -43,7 +44,7 @@ import {
 } from "./vocab";
 
 describe("vocab enums accept every literal and reject unknown values", () => {
-  const CASES: Array<[string, { safeParse: (v: unknown) => { success: boolean } }, readonly string[]]> = [
+  const CASES: Array<[string, z.ZodType, readonly string[]]> = [
     ["broadcastStatusSchema", broadcastStatusSchema, ["draft", "scheduled", "sending", "sent", "failed"]],
     [
       "recipientStatusSchema",
@@ -77,9 +78,8 @@ describe("vocab enums accept every literal and reject unknown values", () => {
       it("rejects an unrecognised value with a useful issue", () => {
         const result = schema.safeParse("totally-not-a-real-value");
         expect(result.success).toBe(false);
-        if (!result.success) {
-          expect(result.error.issues.length).toBeGreaterThan(0);
-        }
+        if (result.success) throw new Error("expected the parse to fail");
+        expect(result.error.issues.length).toBeGreaterThan(0);
       });
     });
   }

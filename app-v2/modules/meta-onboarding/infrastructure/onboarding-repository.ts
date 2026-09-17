@@ -8,7 +8,7 @@
  * queries run unmodified on both the D1 and Postgres adapters.
  *
  * EVERY statement below filters by `account_id` — see
- * `db/migrations/*/0010_meta_onboarding.sql`'s header for why this
+ * `db/migrations/{d1,postgres}/0010_meta_onboarding.sql`'s header for why this
  * migration set uses `account_id` (matching organizations/seat-limits/
  * platform-admin/contacts) rather than the `tenant_id` column name
  * `users`/`credentials` happen to use; both hold the same value
@@ -64,7 +64,7 @@ export class OnboardingSqlRepository
 {
   private readonly run: DatabaseProvider["query"];
 
-  constructor(private readonly db: DatabaseProvider) {
+  constructor(db: DatabaseProvider) {
     this.run = db.query.bind(db);
   }
 
