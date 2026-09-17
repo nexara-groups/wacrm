@@ -21,6 +21,6 @@
       "@shared/*": ["./nexara/shared/*"]
     }
   },
-  "include": ["nexara/**/*", "modules/**/*", "packages/**/*", "tests/**/*", "db/**/*"],
+  "include": ["nexara/**/*", "modules/**/*", "packages/**/*", "tests/**/*", "db/**/*", "dev/**/*"],
   "exclude": ["node_modules"]
 }
