@@ -145,6 +145,19 @@ export function parsePhoneNumber(raw: string, defaultCountry: CountryCode = "IN"
   ) {
     // Calling code typed without the "+", e.g. "919876543210".
     nsn = nationalDigits.slice(info.callingCode.length);
+  } else if (
+    info.trunkPrefix &&
+    nationalDigits.startsWith(`${info.trunkPrefix}${info.callingCode}`) &&
+    matchesNumberingPlan(
+      info,
+      nationalDigits.slice(info.trunkPrefix.length + info.callingCode.length),
+    )
+  ) {
+    // Trunk prefix followed by the calling code, e.g. "0919876543210".
+    // People do write numbers this way, and accepting it strengthens the
+    // dedup guarantee: it is unambiguous because the remainder must still
+    // satisfy the country's numbering plan.
+    nsn = nationalDigits.slice(info.trunkPrefix.length + info.callingCode.length);
   }
 
   if (!nsn) {

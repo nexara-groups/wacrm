@@ -230,6 +230,24 @@ export class IdentityService implements ExtendedAuthProvider {
     await this.users.markEmailVerified(result.value.userId, new Date().toISOString());
   }
 
+  /**
+   * Send an email-verification token to a user. Not part of
+   * `ExtendedAuthProvider` (the spec only lists the consuming `verifyEmail`),
+   * but needed to actually drive that flow — e.g. after a user changes their
+   * email address. (Invitations verify email as part of `acceptInvitation`
+   * instead, since accepting the invite already proves inbox ownership.)
+   */
+  async sendEmailVerification(userId: UserId): Promise<void> {
+    const user = await this.users.findById(userId);
+    if (!user) return;
+    const { rawToken } = await issueEmailToken(this.emailTokenDeps(), user.id, "verify");
+    await this.emailProvider.send({
+      to: user.email,
+      subject: "Verify your email",
+      text: `Use this token to verify your email: ${rawToken}`,
+    });
+  }
+
   async acceptInvitation(token: string, password: string): Promise<IdentitySession> {
     const result = await consumeEmailToken(this.emailTokenDeps(), token, "invite");
     if (!result.ok) throw result.error;

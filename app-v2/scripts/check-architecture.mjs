@@ -2,7 +2,7 @@
 /**
  * Architecture guard — enforces the dependency rules.
  *
- * 1. Business logic (everything under src/ EXCEPT the allow-listed composition
+ * 1. Business logic (everything under nexara/, modules/ and packages/ EXCEPT the allow-listed composition
  *    points) must never import a provider SDK directly:
  *      - @supabase/*            (database / auth providers only)
  *      - @opennextjs/cloudflare (runtime adapter / container only)
@@ -17,15 +17,15 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 
 const ROOT = process.cwd();
-const SRC = join(ROOT, "src");
+const SCAN_ROOTS = ["nexara", "modules", "packages"].map((d) => join(ROOT, d));
 
 // Files/dirs permitted to import provider SDKs (the only seams that may).
 const ALLOWLIST = [
-  "src/core/platform/providers",
-  "src/core/database/providers",
-  "src/core/auth/providers",
-  "src/core/container.ts",
-  "src/app/_services.ts",
+  "nexara/core/platform/providers",
+  "nexara/core/database/providers",
+  "nexara/core/auth/providers",
+  "nexara/core/container.ts",
+  "nexara/core/email/providers",
 ];
 
 const FORBIDDEN = [
@@ -33,7 +33,7 @@ const FORBIDDEN = [
   { pattern: /from\s+["']@opennextjs\/cloudflare["']/, label: "@opennextjs/cloudflare runtime" },
 ];
 
-const FEATURE_DIR = "src/features";
+const FEATURE_DIR = "modules";
 
 function walk(dir) {
   const out = [];
@@ -52,7 +52,7 @@ function isAllowlisted(relPath) {
 
 const violations = [];
 
-for (const file of walk(SRC)) {
+for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
   const rel = relative(ROOT, file);
   const norm = rel.split(sep).join("/");
   const text = readFileSync(file, "utf8");
@@ -65,7 +65,7 @@ for (const file of walk(SRC)) {
   }
 
   // Rule 2 — service layers contain no SQL and no DB-layer access. Applies to
-  // src/features/** and any module's application/ layer.
+  // modules/** and any module's application/ layer.
   const isServiceLayer =
     norm.startsWith(FEATURE_DIR + "/") || /^src\/modules\/[^/]+\/application\//.test(norm);
   if (isServiceLayer) {
