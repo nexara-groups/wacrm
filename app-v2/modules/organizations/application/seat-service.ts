@@ -11,7 +11,7 @@ import { AppError } from "@shared/errors";
 import type { TenantContext } from "@nexara/core/context";
 import { resolveSeatLimit } from "../domain/seat-limit";
 import { countSeats, type SeatInvitation, type SeatMember } from "../domain/seat-usage";
-import { computeOverSeatLimitStatus, blocksNewInvitations, blocksReactivation } from "../domain/over-seat-limit";
+import { computeOverSeatLimitStatus, blocksNewInvitations } from "../domain/over-seat-limit";
 import { SEAT_MESSAGES } from "../domain/seat-messages";
 import type {
   CreateInvitationInput,
@@ -79,18 +79,24 @@ export class SeatService {
    * alone cannot close the race between two concurrent callers.
    */
   async assertCanAddSeat(tenant: TenantContext): Promise<Result<void, SeatLimitExceeded>> {
-    const [isOverSeatLimit, seatLimit, seatsUsed] = await Promise.all([
+    const [isOverSeatLimitFlag, seatLimit, seatsUsed] = await Promise.all([
       this.repository.getOverSeatLimitState(tenant),
       this.resolveLimit(tenant),
       this.usedSeats(tenant),
     ]);
+
+    // §4.3: a persisted over_seat_limit account blocks growth outright, even
+    // if a stale read of usage would otherwise look like it has room.
     const status = computeOverSeatLimitStatus(seatsUsed, seatLimit);
-    if (isOverSeatLimit || status.isOverSeatLimit || blocksNewInvitations(status)) {
+    if (isOverSeatLimitFlag || blocksNewInvitations(status)) {
       return err(new SeatLimitExceeded(SEAT_MESSAGES.atCap(seatLimit), seatLimit, seatsUsed));
     }
+
+    // §3: the ordinary "no free seats left" case — usage has reached the cap.
     if (seatsUsed >= seatLimit) {
       return err(new SeatLimitExceeded(SEAT_MESSAGES.atCap(seatLimit), seatLimit, seatsUsed));
     }
+
     return ok(undefined);
   }
 
