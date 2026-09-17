@@ -21,13 +21,20 @@ import { buildAudience, formatAudiencePreview } from "@modules/broadcasts/domain
 import { classify } from "@modules/messaging-errors/domain/meta-error-classifier";
 import { resolveSeatLimit } from "@modules/organizations/domain/seat-limit";
 import { parsePhoneNumber } from "@packages/domain";
-import type { Contact } from "@packages/domain";
+import { SqlContactRepository } from "@modules/contacts/infrastructure/contact-repository";
+import type { ContactRecord } from "@modules/contacts/application/ports";
+import type { PhoneNumber } from "@packages/domain";
+import type { TenantContext } from "@nexara/core/context";
 import { PAGE } from "./page";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const ACCOUNT_ID = "acct-demo";
 
 let db: SqlJsDatabaseProvider;
+let contacts: SqlContactRepository;
+
+/** Every read below goes through the repository, which scopes on this. */
+const TENANT: TenantContext = { tenantId: ACCOUNT_ID as never };
 
 /**
  * Seed contacts covering every audience outcome, so the preview below shows
@@ -62,48 +69,31 @@ async function seed(): Promise<void> {
     [ACCOUNT_ID, "Demo Account", ownerId, now, now],
   );
 
+  // Seeded through the repository, not raw SQL: the harness should exercise
+  // the same path production does, and a second hand-written copy of this SQL
+  // would drift from the repository the moment either changed.
   for (const row of SEED) {
-    await db.query(
-      `insert into contacts
-         (id, account_id, phone, display_name, consent_state, deliverability_state,
-          suppressed_reason_code, suppression_strikes, opt_out_scope, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, 0, 'all', $8, $9)`,
-      [randomUUID(), ACCOUNT_ID, row.phone, row.name, row.consent, row.deliverability, row.reasonCode, now, now],
-    );
+    const created = await contacts.create(TENANT, {
+      phoneNumber: row.phone as unknown as PhoneNumber,
+      displayName: row.name,
+      email: null,
+      company: null,
+      consentState: row.consent as never,
+    });
+    if (row.deliverability !== "unknown") {
+      await contacts.applyDeliverabilityPatch(TENANT, created.id as never, {
+        state: row.deliverability as never,
+        suppressedAt: row.reasonCode === null ? null : now,
+        suppressedReasonCode: row.reasonCode,
+        suppressionStrikes: row.reasonCode === null ? 0 : 1,
+      });
+    }
   }
 }
 
-/** Reads contacts through SQL and maps them to the shared `Contact` entity. */
-async function loadContacts(): Promise<readonly Contact[]> {
-  const { rows } = await db.query<Record<string, string | number | null>>(
-    `select id, account_id, phone, display_name, email, consent_state, deliverability_state,
-            suppressed_reason_code, suppression_strikes, opt_out_scope, created_at, updated_at
-       from contacts
-      where account_id = $1
-      order by display_name`,
-    [ACCOUNT_ID],
-  );
-  return rows.map(
-    (r) =>
-      ({
-        id: String(r.id),
-        accountId: String(r.account_id),
-        phoneNumber: String(r.phone),
-        displayName: r.display_name === null ? null : String(r.display_name),
-        email: r.email === null ? null : String(r.email),
-        consentState: String(r.consent_state),
-        optedOutAt: null,
-        optOutSource: null,
-        optOutEvidence: null,
-        optOutScope: "all",
-        deliverabilityState: String(r.deliverability_state),
-        suppressedAt: null,
-        suppressedReasonCode: r.suppressed_reason_code === null ? null : String(r.suppressed_reason_code),
-        suppressionStrikes: Number(r.suppression_strikes ?? 0),
-        createdAt: String(r.created_at),
-        updatedAt: String(r.updated_at),
-      }) as unknown as Contact,
-  );
+/** Reads contacts through the real repository — no parallel SQL in this file. */
+async function loadContacts(): Promise<readonly ContactRecord[]> {
+  return contacts.listAll(TENANT);
 }
 
 const json = (value: unknown): [number, Record<string, string>, string] => [
@@ -146,6 +136,36 @@ async function route(url: URL): Promise<[number, Record<string, string>, string]
         skipped: selection.skipped.map((g) => ({
           reason: g.reason.label,
           count: g.contactIds.length,
+        })),
+      });
+    }
+
+    /**
+     * Repository-backed search, so the filtering and pagination in
+     * SqlContactRepository is exercised over HTTP rather than only in tests.
+     */
+    case "/api/contacts/search": {
+      const q = url.searchParams.get("q") ?? undefined;
+      const consent = url.searchParams.get("consent") ?? undefined;
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const pageSize = Number(url.searchParams.get("pageSize") ?? "10");
+      const result = await contacts.search(
+        TENANT,
+        {
+          ...(q !== undefined && q.length > 0 ? { query: q } : {}),
+          ...(consent !== undefined ? { consentState: consent as never } : {}),
+        },
+        { page, pageSize },
+      );
+      return json({
+        total: result.total,
+        page,
+        pageSize,
+        items: result.items.map((c) => ({
+          name: c.displayName,
+          phone: c.phoneNumber,
+          consentState: c.consentState,
+          deliverabilityState: c.deliverabilityState,
         })),
       });
     }
@@ -203,6 +223,7 @@ async function route(url: URL): Promise<[number, Record<string, string>, string]
 async function main(): Promise<void> {
   db = await SqlJsDatabaseProvider.create();
   const applied = runMigrations(db);
+  contacts = new SqlContactRepository(db);
   await seed();
 
   createServer((req, res) => {
