@@ -74,9 +74,11 @@ describe("META_ERROR_CODES seed table", () => {
     }
   });
 
-  it("no layman message contains its own Meta error code or the word 'Meta'", () => {
+  it("no layman message contains its own numeric Meta error code", () => {
     // Guards spec §4b: "No user-facing string contains a numeric Meta code
-    // or raw Meta text." Operator hints are exempt (technical audience).
+    // or raw Meta text." Mentioning the company name "Meta" in plain
+    // English (e.g. "restricted by Meta") is fine — the spec's own copy
+    // does this; what's forbidden is the developer code/string itself.
     // Checks against the specific code (not a blanket "no digits" rule,
     // since legitimate copy contains numbers unrelated to codes, e.g.
     // "over 24 hours").
@@ -91,7 +93,6 @@ describe("META_ERROR_CODES seed table", () => {
       if (/^\d+$/.test(entry.code)) {
         expect(entry.laymanMessage).not.toContain(entry.code);
       }
-      expect(entry.laymanMessage.toLowerCase()).not.toContain("meta");
     }
   });
 

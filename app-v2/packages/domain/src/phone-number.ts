@@ -37,10 +37,18 @@ interface CountryDialInfo {
   readonly nsnLengths: readonly number[];
   /** Domestic trunk prefix dialled before the NSN, if any (e.g. "0" in India/UK/Australia). */
   readonly trunkPrefix?: string;
+  /**
+   * Optional tighter numbering-plan check beyond length, applied to the NSN
+   * once extracted. India's mobile numbers all start 6–9 (post-2003
+   * numbering plan) — WhatsApp is a mobile product, so this catches
+   * plausible-length-but-impossible numbers like "0000000000" instead of
+   * silently accepting them as a "valid" Indian number.
+   */
+  readonly nsnPattern?: RegExp;
 }
 
 const COUNTRY_DIAL_INFO: Record<CountryCode, CountryDialInfo> = {
-  IN: { callingCode: "91", nsnLengths: [10], trunkPrefix: "0" },
+  IN: { callingCode: "91", nsnLengths: [10], trunkPrefix: "0", nsnPattern: /^[6-9]\d{9}$/ },
   US: { callingCode: "1", nsnLengths: [10] },
   CA: { callingCode: "1", nsnLengths: [10] },
   GB: { callingCode: "44", nsnLengths: [10], trunkPrefix: "0" },
@@ -48,6 +56,12 @@ const COUNTRY_DIAL_INFO: Record<CountryCode, CountryDialInfo> = {
   AU: { callingCode: "61", nsnLengths: [9], trunkPrefix: "0" },
   SG: { callingCode: "65", nsnLengths: [8] },
 };
+
+function matchesNumberingPlan(info: CountryDialInfo, nsn: string): boolean {
+  if (!info.nsnLengths.includes(nsn.length)) return false;
+  if (info.nsnPattern && !info.nsnPattern.test(nsn)) return false;
+  return true;
+}
 
 // Calling codes sorted longest-first so a "+"-prefixed number is matched
 // against the most specific (longest) known calling code before a shorter
@@ -100,7 +114,7 @@ export function parsePhoneNumber(raw: string, defaultCountry: CountryCode = "IN"
     if (matchedCode) {
       const info = Object.values(COUNTRY_DIAL_INFO).find((c) => c.callingCode === matchedCode);
       const nsn = digits.slice(matchedCode.length);
-      if (info && !info.nsnLengths.includes(nsn.length)) {
+      if (info && !matchesNumberingPlan(info, nsn)) {
         // Known country, but the remainder doesn't match its numbering plan.
         invalid(raw);
       }
@@ -115,19 +129,19 @@ export function parsePhoneNumber(raw: string, defaultCountry: CountryCode = "IN"
 
   let nsn: string | undefined;
 
-  if (info.nsnLengths.includes(nationalDigits.length)) {
+  if (matchesNumberingPlan(info, nationalDigits)) {
     // Bare national number, e.g. "9876543210".
     nsn = nationalDigits;
   } else if (
     info.trunkPrefix &&
     nationalDigits.startsWith(info.trunkPrefix) &&
-    info.nsnLengths.includes(nationalDigits.length - info.trunkPrefix.length)
+    matchesNumberingPlan(info, nationalDigits.slice(info.trunkPrefix.length))
   ) {
     // Trunk-prefixed national number, e.g. "09876543210".
     nsn = nationalDigits.slice(info.trunkPrefix.length);
   } else if (
     nationalDigits.startsWith(info.callingCode) &&
-    info.nsnLengths.includes(nationalDigits.length - info.callingCode.length)
+    matchesNumberingPlan(info, nationalDigits.slice(info.callingCode.length))
   ) {
     // Calling code typed without the "+", e.g. "919876543210".
     nsn = nationalDigits.slice(info.callingCode.length);
