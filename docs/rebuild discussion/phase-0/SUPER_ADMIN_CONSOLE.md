@@ -33,7 +33,7 @@ interface Principal {
   platformRole?: PlatformRole;    // separate axis, separate table, separate grant path
 }
 
-const PLATFORM_ROLES = ['platform_support', 'platform_admin', 'platform_owner'] as const;
+const PLATFORM_ROLES = ['platform_support', 'platform_admin', 'platform_superadmin'] as const;
 ```
 
 Consequences, all deliberate:
@@ -42,17 +42,33 @@ Consequences, all deliberate:
 - A user can hold both (a Nexara staffer who also owns a demo account) without either leaking into the other.
 - Revoking tenant membership never accidentally revokes platform access, or the reverse.
 
-### Three tiers, not one
+### Three tiers, strictly cumulative
 
-"Super super admin" implies unrestricted reach. Unrestricted reach for everyone who does support work is how customer data leaks. Split by need:
+**The tiers are cumulative — each is a strict superset of the one below.** `platform_superadmin` is the "super super admin": it can do everything the lower tiers can, across every account, plus things they cannot. Nothing is withheld from the top tier.
 
-| Tier | Can | Cannot |
+The tiering exists so that *not every staff member doing support work needs the top tier*. It does not cap the top tier.
+
+| Tier | Adds | Cross-account reports & activity |
 |---|---|---|
-| `platform_support` | See all accounts, metadata, usage, billing state, delivery health, error rates, audit logs | Read message **content**; mutate tenant data; impersonate |
-| `platform_admin` | Everything above + credit adjustments, suspend/reactivate accounts, clear suppressions, resend/requeue, **time-boxed impersonation** | Grant platform roles; change platform config |
-| `platform_owner` | Everything + grant/revoke platform roles, platform configuration | — (2-person rule on role grants; see §5) |
+| `platform_support` | See **all** accounts: metadata, usage, billing state, credit balances, delivery health, error rates, quality ratings, activity stream, audit logs | ✅ full |
+| `platform_admin` | + credit adjustments, suspend/reactivate accounts, clear suppressions, resend/requeue, **time-boxed impersonation**, message-content access with justification | ✅ full |
+| `platform_superadmin` | + grant/revoke platform roles, platform configuration | ✅ full |
 
-Most day-to-day work is `platform_support`. That tier alone satisfies "see all accounts' activities" without giving anyone the ability to read a customer's conversations.
+`platform_superadmin` is named to avoid collision with the tenant-scoped `owner` role — the two are on different axes and must never read as comparable.
+
+### What is gated, and what is not
+
+Worth being precise, because "restricted tier" is easy to misread as "cannot see client reports":
+
+| | Gated? |
+|---|---|
+| Cross-account **reports, volumes, error rates, credit balances, delivery health, quality ratings, activity** | ❌ **not gated** — available at every tier, for every account |
+| Mutating tenant data (credits, suspension, suppression) | ✅ `platform_admin`+ |
+| Reading a customer's **message content** | ✅ `platform_admin`+, separate permission, justification required, audited |
+| Impersonation | ✅ `platform_admin`+, time-boxed, consented, recorded |
+| Granting platform roles | ✅ `platform_superadmin` only, 2-person rule (§5) |
+
+Aggregate oversight touches no message content, so it carries none of that liability. Coupling the two would mean every routine report view inherits the risk of reading private conversations — hence the split. Oversight itself is unrestricted at all three tiers.
 
 ---
 
@@ -98,7 +114,7 @@ Non-negotiable, because this role defeats tenant isolation by design:
 
 ```
 MFA mandatory for every platform role — no exceptions, no grace period
-Platform roles granted only by platform_owner, with a 2-person rule
+Platform roles granted only by platform_superadmin, with a 2-person rule
 Every cross-tenant read audited: who · what account · what data · when · why
 Impersonation: time-boxed (≤60 min), reason required, banner visible to the
   impersonated user, full session recorded, auto-expires
