@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"],
+    "paths": {
+      "@nexara/*": ["./nexara/*"],
+      "@modules/*": ["./modules/*"],
+      "@packages/*": ["./packages/*"],
+      "@shared/*": ["./nexara/shared/*"]
+    }
+  },
+  "include": ["nexara/**/*", "modules/**/*", "packages/**/*", "tests/**/*", "db/**/*"],
+  "exclude": ["node_modules"]
+}

@@ -49,3 +49,4 @@ backups/
 # open-next & wrangler build artifacts
 .open-next/
 .wrangler/
+app-v2/node_modules/
