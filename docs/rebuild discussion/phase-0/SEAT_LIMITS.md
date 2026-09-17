@@ -1,6 +1,8 @@
 # SEAT_LIMITS — Sub-Users Per Account, With a Cap
 
-Every account creates its own sub-users. The number must be capped, and the cap must be a **provision** — configurable per account and per plan, not a constant in the code.
+Every account creates its own sub-users. The number must be capped, and the cap must be a **provision** — configurable at platform level, per plan, and per account, never a constant in the code.
+
+**Default: 3 seats.** Any account that wants more is raised from the console, with a reason, without a deploy.
 
 ---
 
@@ -21,30 +23,46 @@ Note the role vocabulary differs from the framework's (`owner`/`admin`/`manager`
 
 ## 2. Model
 
-The cap is resolved, not stored in one place — so a plan change lifts every account on that plan, while a single account can still be granted an exception.
+**Default cap is 3 seats.** That is a *configured value*, never a constant in the code — changeable platform-wide, and overridable for any individual account that asks.
+
+The cap is resolved through three levels, most specific wins:
 
 ```
 resolved_seat_limit(account) =
-    account.seat_limit_override          -- per-account grant, nullable
- ?? plan.included_seats                  -- from the account's plan
- ?? DEFAULT_SEAT_LIMIT                   -- platform floor, config not literal
+    account.seat_limit_override                -- 1. per-account grant  (nullable)
+ ?? plan.included_seats                        -- 2. the account's plan (nullable)
+ ?? platform_settings.default_seat_limit       -- 3. platform default   (= 3)
 ```
 
+| Level | Who changes it | Effect |
+|---|---|---|
+| **Platform default** | `platform_superadmin` | Moves every account not covered by a plan or an override |
+| **Plan** | `platform_superadmin` | Moves every account on that plan |
+| **Account override** | `platform_admin`+ | Moves exactly one account — *"if any account wants more, we manage it"* |
+
+Nothing is hardcoded at any level. Raising one account from 3 to 10 is a console action with a reason, not a deploy.
+
 ```
+platform_settings                  -- single-row platform configuration
+  default_seat_limit      INTEGER NOT NULL DEFAULT 3
+  ...other platform-wide defaults
+
 accounts
-  + seat_limit_override   INTEGER          -- NULL = inherit from plan
+  + seat_limit_override   INTEGER          -- NULL = inherit from plan/platform
   + seat_limit_reason     TEXT             -- why this account got an exception
   + seat_limit_set_by     UUID             -- platform actor
   + seat_limit_set_at     TIMESTAMPTZ
 
 plans
-  included_seats          INTEGER NOT NULL
+  included_seats          INTEGER          -- NULL = inherit platform default
   max_seats               INTEGER          -- NULL = unlimited purchasable
   extra_seat_price        NUMERIC          -- NULL = seats not purchasable
 
 seat_usage_events         -- append-only; billing and dispute evidence
   id · account_id · delta · reason · actor_user_id · occurred_at
 ```
+
+A changed platform default or plan value applies **immediately** to accounts inheriting it. Lowering it can put accounts over their cap — that is the `over_seat_limit` path in §4, never a removal.
 
 ### What counts as a seat
 
@@ -56,9 +74,9 @@ Ambiguity here becomes a billing dispute, so it must be explicit:
 | **Pending invitation** (not yet accepted) | Expired or revoked invitation |
 | | Nexara platform staff acting via the console |
 
-**Pending invitations must count.** Otherwise an account on a 5-seat plan issues 50 invitations and ends up with 50 members, and the cap was decorative. Reserve the seat at invitation, release it on expiry or revocation.
+**Pending invitations must count.** Otherwise an account on a 3-seat plan issues 50 invitations and ends up with 50 members, and the cap was decorative. Reserve the seat at invitation, release it on expiry or revocation.
 
-`owner` counts. A 5-seat plan means five people total, not an owner plus five — anything else is a support conversation every time.
+`owner` counts. A 3-seat plan means three people total — the owner plus two others — not an owner plus three. Anything else is a support conversation every time.
 
 ---
 
@@ -81,14 +99,14 @@ Called by:
 | Reactivate a deactivated member | Refuse if at cap — reactivation consumes a seat |
 | Plan downgrade | See §4 |
 
-The accept-time re-check is the one most often missed. Two invitations issued at 4/5 seats, both accepted, is 6 seats without it. Both the reservation and the accept must be **atomic against concurrent accepts** — this is the same class of concurrency problem as the credit wallet's hot row, so it belongs in the DB benchmark's contract tests (`DATABASE_DECISION.md`).
+The accept-time re-check is the one most often missed. At 2 of 3 seats used, two invitations both accepted is 4 seats without it. Both the reservation and the accept must be **atomic against concurrent accepts** — this is the same class of concurrency problem as the credit wallet's hot row, so it belongs in the DB benchmark's contract tests (`DATABASE_DECISION.md`).
 
 ### Plain-English messages
 
 | Situation | Shown to the account |
 |---|---|
-| At cap, inviting | "You've used all 5 user seats on your plan. Remove a user or upgrade to add more." |
-| Pending invites consuming seats | "4 of 5 seats used — 2 are pending invitations that haven't been accepted yet." |
+| At cap, inviting | "You've used all 3 user seats on your plan. Remove a user or upgrade to add more." |
+| Pending invites consuming seats | "3 of 3 seats used — 1 is a pending invitation that hasn't been accepted yet." |
 | Accept fails (cap reached meanwhile) | "This workspace has no free seats. Ask the account owner to free one or upgrade." |
 | Approaching cap | "1 seat left on your plan." |
 
@@ -98,7 +116,7 @@ Same rules as `META_ERROR_TAXONOMY.md` §4b: no jargon, say what happened and wh
 
 ## 4. Downgrade — the hard case
 
-An account on 20 seats downgrades to a 5-seat plan with 12 active users. Deleting 7 people silently is unacceptable; ignoring the cap makes it meaningless.
+An account on 10 seats downgrades to the default 3 with 8 active users. Deleting 5 people silently is unacceptable; ignoring the cap makes it meaningless.
 
 **Grandfather, then block growth:**
 
@@ -121,9 +139,11 @@ Per `SUPER_ADMIN_CONSOLE.md`:
 |---|---|
 | `platform_support` | See seat usage and limits for every account |
 | `platform_admin` | Set `seat_limit_override` with a mandatory reason (audited) |
-| `platform_superadmin` | Change plan-level `included_seats` |
+| `platform_superadmin` | Change plan-level `included_seats` **and** the platform default |
 
-Every override writes to `platform_audit_log` and `seat_usage_events`. "Why does this account have 50 seats on a 5-seat plan" must always have an answer with a name attached.
+Every override writes to `platform_audit_log` and `seat_usage_events`. "Why does this account have 25 seats when the default is 3" must always have an answer with a name attached.
+
+The fleet overview shows `used / limit` per account and flags every account carrying an override, so grants stay visible rather than accumulating unnoticed.
 
 ---
 
@@ -143,6 +163,10 @@ Per `DO_NOT_BUILD_YET.md`'s complexity gate: the schema allows them, the code do
 ## 7. Test requirements
 
 ```
+Default resolves to 3 with no plan and no override
+Plan value overrides the platform default; account override beats both
+Changing the platform default moves inheriting accounts immediately
+Changing the platform default does NOT move accounts with an override
 Cap enforced at invitation creation
 Cap re-enforced at invitation acceptance
 Two concurrent accepts at (cap − 1) → exactly one succeeds
@@ -163,7 +187,7 @@ Seat counts are tenant-scoped
 
 | Phase | Item |
 |---|---|
-| **With the organizations module** (not deferrable) | `resolved_seat_limit`, `SeatService`, enforcement at invite + accept, `seat_usage_events` |
+| **With the organizations module** (not deferrable) | `platform_settings.default_seat_limit` (= 3), `resolved_seat_limit`, `SeatService`, enforcement at invite + accept, `seat_usage_events`, per-account override |
 | With billing | Purchasable extra seats, overage charging, downgrade grace |
 | With the console | Override UI, fleet-wide seat reporting |
 | Deferred | Per-role pricing, session limits, pooling, time-boxed seats |
