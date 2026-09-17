@@ -4,12 +4,26 @@
  * both must block a send, for different reasons, with different messages
  * and different reversal rules.
  *
- * The rule that matters (§3b): "Opt-out is NOT clearable by any operator —
- * only a new inbound message from that person, or an explicit re-opt-in,
- * restores sending." This is why the transition predicate below takes the
- * triggering `actor` — the same `unknown -> opted_in` shape of transition
- * is legal for `opted_out -> opted_in` too, but ONLY when the actor is the
- * contact themselves (never "operator").
+ * This transition table is deliberately kept IN SYNC with the concrete,
+ * already-tested transition functions in
+ * `modules/messaging-errors/domain/consent.ts` (`optOut`, `markDoNotContact`,
+ * `reOptIn`, `clearDoNotContact`) rather than re-deriving the rules from the
+ * spec text independently — see this package's SubagentHandback report for
+ * the vocabulary-conflict note. In particular:
+ *
+ *   - `opted_out` (the PERSON's own expressed wish) is reversible ONLY by
+ *     the contact themselves (`reOptIn` — a fresh inbound message or an
+ *     explicit, evidenced re-opt-in). An "operator" actor can never leave
+ *     `opted_out`.
+ *   - `do_not_contact` (the BUSINESS's own compliance/DND flag — set by an
+ *     operator or at import) IS reversible by an operator (`clearDoNotContact`),
+ *     unlike `opted_out`. This is the one place §3b's "not clearable by any
+ *     operator" rule does NOT apply verbatim: that sentence describes the
+ *     customer's expressed wish, not the business's own flag on top of it.
+ *   - Entering `opted_out` or `do_not_contact` is unguarded by the current
+ *     state (mirrors `optOut`/`markDoNotContact`, which take no `current`
+ *     parameter at all) — a contact can be (re-)marked opted_out or
+ *     do_not_contact from any prior state.
  */
 export type ConsentState = "unknown" | "opted_in" | "opted_out" | "do_not_contact";
 
@@ -20,24 +34,61 @@ export const CONSENT_STATES: readonly ConsentState[] = [
   "do_not_contact",
 ];
 
-/** Mirrors `opt_out_source` (§3b) plus "contact" for an explicit re-opt-in/new inbound message. */
+/**
+ * Who/what triggered a consent transition.
+ *   - "contact"  — the person themself: a new inbound message, an explicit
+ *                   re-opt-in, or (as an opt-out trigger) a stop
+ *                   keyword/quick-reply they sent.
+ *   - "inferred" — system-inferred from behaviour (e.g. repeated delivery
+ *                   failure after prior success) — treated as opt-out, not
+ *                   technical, per §3b, but is NOT the contact literally
+ *                   acting, so it is tracked separately.
+ *   - "operator" — a human operator/account owner action.
+ *   - "import"   — a CSV/bulk import marking Do-Not-Contact.
+ */
 export type ConsentActor = "contact" | "operator" | "import" | "inferred";
 
-const REACHABLE_TARGETS: Record<ConsentState, readonly ConsentState[]> = {
-  unknown: ["opted_in", "opted_out", "do_not_contact"],
-  opted_in: ["opted_out", "do_not_contact"],
-  opted_out: ["opted_in", "do_not_contact"],
-  do_not_contact: ["opted_in", "opted_out"],
+/** Actors that may move a contact INTO `opted_out` (mirrors `OptOutSource` minus operator/import). */
+const OPT_OUT_ACTORS: readonly ConsentActor[] = ["contact", "inferred"];
+/** Actors that may move a contact INTO `do_not_contact` (mirrors `OptOutSource`'s operator/import). */
+const DO_NOT_CONTACT_ACTORS: readonly ConsentActor[] = ["operator", "import"];
+
+interface TransitionRule {
+  readonly to: ConsentState;
+  readonly allowedActors: readonly ConsentActor[] | "any";
+}
+
+const TRANSITIONS: Record<ConsentState, readonly TransitionRule[]> = {
+  unknown: [
+    { to: "opted_in", allowedActors: "any" },
+    { to: "opted_out", allowedActors: OPT_OUT_ACTORS },
+    { to: "do_not_contact", allowedActors: DO_NOT_CONTACT_ACTORS },
+  ],
+  opted_in: [
+    { to: "opted_out", allowedActors: OPT_OUT_ACTORS },
+    { to: "do_not_contact", allowedActors: DO_NOT_CONTACT_ACTORS },
+  ],
+  opted_out: [
+    // reOptIn: ONLY the contact themself, never an operator (§3b).
+    { to: "opted_in", allowedActors: ["contact"] },
+    { to: "do_not_contact", allowedActors: DO_NOT_CONTACT_ACTORS },
+  ],
+  do_not_contact: [
+    // clearDoNotContact: an operator action — the business's own flag.
+    { to: "opted_in", allowedActors: ["operator"] },
+    { to: "opted_out", allowedActors: OPT_OUT_ACTORS },
+  ],
 };
 
-/** States a contact can only ever be moved OUT of by their own action (§3b). */
+/** States that block a marketing/broadcast send (§3b, §4b). */
 const SUPPRESSED_STATES: readonly ConsentState[] = ["opted_out", "do_not_contact"];
 
 /**
  * Pure predicate: is `from -> to` a legal ConsentState transition when
- * triggered by `actor`? Encodes the "never clearable by an operator" rule
- * directly, so callers cannot accidentally build an operator-clears-opt-out
- * code path that merely forgets to check it.
+ * triggered by `actor`? Encodes both the reachability graph AND the
+ * per-transition actor restriction (the "never clearable by an operator"
+ * rule for `opted_out`) directly, so callers cannot accidentally build an
+ * operator-clears-opt-out code path that merely forgets to check it.
  */
 export function canTransitionConsentState(
   from: ConsentState,
@@ -45,17 +96,16 @@ export function canTransitionConsentState(
   actor: ConsentActor,
 ): boolean {
   if (from === to) return false;
-  if (!REACHABLE_TARGETS[from].includes(to)) return false;
-
-  const leavingSuppressed = SUPPRESSED_STATES.includes(from) && !SUPPRESSED_STATES.includes(to);
-  if (leavingSuppressed && actor !== "contact") {
-    // Only the contact themself (a new inbound message, or an explicit,
-    // evidenced re-opt-in) may clear opted_out / do_not_contact.
-    return false;
-  }
-  return true;
+  const rule = TRANSITIONS[from].find((r) => r.to === to);
+  if (!rule) return false;
+  return rule.allowedActors === "any" || rule.allowedActors.includes(actor);
 }
 
 export function isSuppressedConsentState(state: ConsentState): boolean {
   return SUPPRESSED_STATES.includes(state);
+}
+
+/** True when this consent state must block marketing/broadcast sends (mirrors `blocksSend` in modules/messaging-errors). */
+export function consentBlocksSend(state: ConsentState): boolean {
+  return isSuppressedConsentState(state);
 }
