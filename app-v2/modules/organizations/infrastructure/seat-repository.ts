@@ -128,6 +128,8 @@ function toRole(value: unknown): Role {
 function toSeatMember(row: Row): SeatMember {
   return {
     id: text(row.id),
+    userId: text(row.user_id),
+    joinedAt: new Date(text(row.created_at)),
     status: row.deactivated_at === null || row.deactivated_at === undefined ? "active" : "deactivated",
     role: toRole(row.role),
     isPlatformStaff: Number(row.is_platform_staff ?? 0) !== 0,
@@ -142,9 +144,17 @@ function toSeatInvitation(row: Row): SeatInvitation {
         ? "accepted"
         : "pending";
   const expiresAtRaw = nullableText(row.expires_at);
+  const createdAtRaw = nullableText(row.created_at);
   return {
     id: text(row.id),
     status,
+    // `label` is where the invited address is stored — see this file's
+    // header. It is nullable in the schema, so a null here means "not
+    // recorded", never a stand-in address.
+    email: nullableText(row.label),
+    role: toRole(row.role),
+    invitedBy: nullableText(row.created_by_user_id),
+    createdAt: createdAtRaw === null ? null : new Date(createdAtRaw),
     expiresAt: expiresAtRaw === null ? null : new Date(expiresAtRaw),
   };
 }
@@ -225,7 +235,8 @@ export class SqlSeatRepository implements SeatRepository {
 
   async listMembers(tenant: TenantContext): Promise<readonly SeatMember[]> {
     const { rows } = await this.db.query<Row>(
-      `select m.id as id, m.role as role, m.deactivated_at as deactivated_at,
+      `select m.id as id, m.user_id as user_id, m.created_at as created_at,
+              m.role as role, m.deactivated_at as deactivated_at,
               case when pa.user_id is not null and pa.revoked_at is null then 1 else 0 end as is_platform_staff
          from memberships m
          left join platform_admins pa on pa.user_id = m.user_id
@@ -237,7 +248,8 @@ export class SqlSeatRepository implements SeatRepository {
 
   async listInvitations(tenant: TenantContext): Promise<readonly SeatInvitation[]> {
     const { rows } = await this.db.query<Row>(
-      `select id, accepted_at, revoked_at, expires_at
+      `select id, accepted_at, revoked_at, expires_at,
+              label, role, created_by_user_id, created_at
          from account_invitations
         where account_id = $1`,
       [tenant.tenantId],
@@ -275,7 +287,15 @@ export class SqlSeatRepository implements SeatRepository {
       [id, tenant.tenantId, tokenPlaceholder, input.role, input.invitedBy, input.email, createdAt, expiresAt],
     );
     if (rowCount !== 1) return null;
-    return { id, status: "pending", expiresAt: input.expiresAt };
+    return {
+      id,
+      status: "pending",
+      email: input.email,
+      role: input.role,
+      invitedBy: input.invitedBy,
+      createdAt: new Date(createdAt),
+      expiresAt: input.expiresAt,
+    };
   }
 
   async acceptInvitationIfSeatAvailable(
@@ -333,7 +353,14 @@ export class SqlSeatRepository implements SeatRepository {
 
       const claim = results[0];
       if (claim === undefined || claim.rowCount !== 1) return null;
-      return { id: newMemberId, status: "active", role, isPlatformStaff: false };
+      return {
+        id: newMemberId,
+        userId: newUserId,
+        joinedAt: new Date(nowValue),
+        status: "active",
+        role,
+        isPlatformStaff: false,
+      };
     });
   }
 
@@ -385,7 +412,14 @@ export class SqlSeatRepository implements SeatRepository {
         },
       ]),
     );
-    return { id: memberId, status: "active", role: input.role, isPlatformStaff: false };
+    return {
+      id: memberId,
+      userId,
+      joinedAt: new Date(now),
+      status: "active",
+      role: input.role,
+      isPlatformStaff: false,
+    };
   }
 
   async reactivateMemberIfSeatAvailable(tenant: TenantContext, memberId: string): Promise<SeatMember | null> {
@@ -400,12 +434,19 @@ export class SqlSeatRepository implements SeatRepository {
       if (rowCount !== 1) return null;
 
       const { rows } = await this.db.query<Row>(
-        `select id, role from memberships where account_id = $1 and id = $2`,
+        `select id, user_id, created_at, role from memberships where account_id = $1 and id = $2`,
         [tenant.tenantId, memberId],
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return { id: text(row.id), status: "active", role: toRole(row.role), isPlatformStaff: false };
+      return {
+        id: text(row.id),
+        userId: text(row.user_id),
+        joinedAt: new Date(text(row.created_at)),
+        status: "active",
+        role: toRole(row.role),
+        isPlatformStaff: false,
+      };
     });
   }
 

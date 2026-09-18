@@ -30,7 +30,16 @@ export type SeatMemberStatus = "active" | "removed" | "deactivated";
  * only — every role counts equally, `owner` included (§2: "a 3-seat plan
  * means three people total — the owner plus two others"). */
 export interface SeatMember {
+  /** The MEMBERSHIP row id — not the user's id. See `userId` below. */
   readonly id: string;
+  /**
+   * The member's actual user id. Distinct from `id`, and the distinction
+   * matters: a screen that assigns work to `id` is pointing at a
+   * membership row, not a person.
+   */
+  readonly userId: string;
+  /** When the membership was created — the "joined" date a team screen shows. */
+  readonly joinedAt: Date;
   readonly status: SeatMemberStatus;
   readonly role: Role;
   /** True for Nexara platform staff acting via the console — never counts. */
@@ -46,6 +55,15 @@ export type SeatInvitationStatus = "pending" | "accepted" | "expired" | "revoked
 export interface SeatInvitation {
   readonly id: string;
   readonly status: SeatInvitationStatus;
+  /**
+   * Who was invited. Persisted in `account_invitations.label`; the read
+   * query simply never selected it, which left every screen showing a
+   * placeholder instead of the address someone actually typed.
+   */
+  readonly email: string | null;
+  readonly role: Role;
+  readonly invitedBy: string | null;
+  readonly createdAt: Date | null;
   /**
    * When the invitation stops being valid. An invitation whose status is
    * still `pending` in storage but whose `expiresAt` has passed is treated

@@ -116,6 +116,10 @@ class FakeSeatRepository implements SeatRepository {
       const invitation: SeatInvitation = {
         id: `invite-${this.nextId++}`,
         status: "pending",
+        email: input.email,
+        role: input.role,
+        invitedBy: input.invitedBy,
+        createdAt: NOW,
         expiresAt: input.expiresAt,
       };
       store.invitations.push(invitation);
@@ -151,7 +155,8 @@ class FakeSeatRepository implements SeatRepository {
       await this.settle();
       if (activeMembers >= limit) return null;
 
-      const newMember: SeatMember = { id: `member-${this.nextId++}`, status: "active", role: "member", isPlatformStaff: false };
+      const memberId = `member-${this.nextId++}`;
+      const newMember: SeatMember = { id: memberId, userId: `user-${memberId}`, joinedAt: NOW, status: "active", role: "member", isPlatformStaff: false };
       store.members.push(newMember);
       store.invitations = store.invitations.map((i) => (i.id === invitationId ? { ...i, status: "accepted" } : i));
       void now;
@@ -170,8 +175,11 @@ class FakeSeatRepository implements SeatRepository {
 
   async createMemberDirectly(tenant: TenantContext, input: DirectUserCreationInput): Promise<SeatMember> {
     const store = this.store(tenant);
+    const directMemberId = `member-${this.nextId++}`;
     const newMember: SeatMember = {
-      id: `member-${this.nextId++}`,
+      id: directMemberId,
+      userId: `user-${directMemberId}`,
+      joinedAt: NOW,
       status: "active",
       role: input.role,
       isPlatformStaff: false,
@@ -237,7 +245,15 @@ function makeService(repo: FakeSeatRepository): SeatService {
 }
 
 function activeMember(id: string, overrides: Partial<SeatMember> = {}): SeatMember {
-  return { id, status: "active", role: "member", isPlatformStaff: false, ...overrides };
+  return {
+    id,
+    userId: `user-${id}`,
+    joinedAt: NOW,
+    status: "active",
+    role: "member",
+    isPlatformStaff: false,
+    ...overrides,
+  };
 }
 
 describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
@@ -284,7 +300,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
     // Invitation was validly created back when the account had 2 seats free.
     repo.seed("acct-1", {
       members: [activeMember("m1")],
-      invitations: [{ id: "invite-1", status: "pending", expiresAt: null }],
+      invitations: [{ id: "invite-1", status: "pending", email: "invitee@example.test", role: "member", invitedBy: "user-1", createdAt: NOW, expiresAt: null }],
     });
     const service = makeService(repo);
 
@@ -314,7 +330,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
     const repo = new FakeSeatRepository();
     repo.seed("acct-1", {
       members: [activeMember("m1")],
-      invitations: [{ id: "invite-1", status: "pending", expiresAt: null }],
+      invitations: [{ id: "invite-1", status: "pending", email: "invitee@example.test", role: "member", invitedBy: "user-1", createdAt: NOW, expiresAt: null }],
     });
     const service = makeService(repo);
 
@@ -338,8 +354,8 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
       repo.seed("acct-1", {
         members: [activeMember("m1"), activeMember("m2")], // cap - 1 = 2 active members, cap = 3
         invitations: [
-          { id: "invite-A", status: "pending", expiresAt: null },
-          { id: "invite-B", status: "pending", expiresAt: null },
+          { id: "invite-A", status: "pending", email: "invitee@example.test", role: "member", invitedBy: "user-1", createdAt: NOW, expiresAt: null },
+          { id: "invite-B", status: "pending", email: "invitee@example.test", role: "member", invitedBy: "user-1", createdAt: NOW, expiresAt: null },
         ],
       });
       const service = makeService(repo);
@@ -362,7 +378,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
   it("reactivating a member at cap is refused", async () => {
     const repo = new FakeSeatRepository();
     repo.seed("acct-1", {
-      members: [activeMember("m1"), activeMember("m2"), activeMember("m3"), { id: "m4", status: "deactivated", role: "member", isPlatformStaff: false }],
+      members: [activeMember("m1"), activeMember("m2"), activeMember("m3"), { id: "m4", userId: "user-m4", joinedAt: NOW, status: "deactivated", role: "member", isPlatformStaff: false }],
     });
     const service = makeService(repo);
 
@@ -375,7 +391,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
   it("reactivating a member under the cap succeeds and consumes a seat", async () => {
     const repo = new FakeSeatRepository();
     repo.seed("acct-1", {
-      members: [activeMember("m1"), { id: "m2", status: "deactivated", role: "member", isPlatformStaff: false }],
+      members: [activeMember("m1"), { id: "m2", userId: "user-m2", joinedAt: NOW, status: "deactivated", role: "member", isPlatformStaff: false }],
     });
     const service = makeService(repo);
 
@@ -406,7 +422,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
   it("over_seat_limit blocks reactivation", async () => {
     const repo = new FakeSeatRepository();
     repo.seed("acct-1", {
-      members: [{ id: "m1", status: "deactivated", role: "member", isPlatformStaff: false }],
+      members: [{ id: "m1", userId: "user-m1", joinedAt: NOW, status: "deactivated", role: "member", isPlatformStaff: false }],
       overSeatLimit: true,
     });
     const service = makeService(repo);
@@ -529,7 +545,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
     const repo = new FakeSeatRepository();
     repo.seed("acct-1", {
       members: [activeMember("m1"), activeMember("m2")],
-      invitations: [{ id: "invite-1", status: "pending", expiresAt: null }], // usage = 3 = cap
+      invitations: [{ id: "invite-1", status: "pending", email: "invitee@example.test", role: "member", invitedBy: "user-1", createdAt: NOW, expiresAt: null }], // usage = 3 = cap
     });
     const service = makeService(repo);
 

@@ -6,6 +6,8 @@ const NOW = new Date("2026-09-17T00:00:00Z");
 function member(overrides: Partial<SeatMember> = {}): SeatMember {
   return {
     id: overrides.id ?? "member-1",
+    userId: overrides.userId ?? "user-1",
+    joinedAt: overrides.joinedAt ?? NOW,
     status: overrides.status ?? "active",
     role: overrides.role ?? "member",
     isPlatformStaff: overrides.isPlatformStaff ?? false,
@@ -16,6 +18,10 @@ function invitation(overrides: Partial<SeatInvitation> = {}): SeatInvitation {
   return {
     id: overrides.id ?? "invite-1",
     status: overrides.status ?? "pending",
+    email: overrides.email ?? "invitee@example.test",
+    role: overrides.role ?? "member",
+    invitedBy: overrides.invitedBy ?? "user-1",
+    createdAt: overrides.createdAt ?? NOW,
     expiresAt: overrides.expiresAt === undefined ? null : overrides.expiresAt,
   };
 }

@@ -29,10 +29,18 @@ export type InvitationStatus = z.infer<typeof invitationStatusSchema>;
 export const invitationSchema = z.object({
   id: opaqueIdSchema,
   accountId: accountIdSchema,
-  email: z.email(),
+  /**
+   * Nullable because `account_invitations.label`, where the address lives,
+   * is nullable. A non-null contract here forced the mapping layer to
+   * invent an address for any row without one, which put fabricated
+   * addresses on a team screen where they were indistinguishable from real
+   * ones. A missing address should look missing.
+   */
+  email: z.email().nullable(),
   role: invitableRoleSchema,
   status: invitationStatusSchema,
-  invitedBy: userIdSchema,
+  /** Nullable for the same reason: `created_by_user_id` is nullable. */
+  invitedBy: userIdSchema.nullable(),
   expiresAt: isoDateTimeSchema,
   createdAt: isoDateTimeSchema,
 });
