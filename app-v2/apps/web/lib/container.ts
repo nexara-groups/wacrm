@@ -7,9 +7,10 @@
  * (see DATABASE_DECISION.md at the repo root); nothing here may be treated
  * as a production adapter.
  *
- * A demo account + a handful of contacts are seeded on first build so the
- * one screen this app ships has real data to show, read back through the
- * real `ContactRepository` — never a parallel copy of this data.
+ * Demo data comes from `lib/seed/*`, one module per vertical slice, each
+ * writing through the real repositories — never a parallel copy of the data.
+ * The seeder list below is the only place that knows all of them, so a slice
+ * can be filled in without editing this file.
  *
  * The singleton is cached on `globalThis` (not just a module-level variable)
  * so Next.js dev-mode module reloads (Fast Refresh re-evaluating this file)
@@ -23,59 +24,19 @@ import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provide
 import { runMigrations } from "../../../db/sqlite/run-migrations";
 import { buildModuleRepositories, type ModuleRepositories } from "@modules/container";
 import type { TenantContext } from "@nexara/core/context";
-import type { PhoneNumber } from "@packages/domain";
+import { seedContacts } from "./seed/contacts";
+import { seedConversations } from "./seed/conversations";
+import { seedBroadcasts } from "./seed/broadcasts";
+import { seedTeam } from "./seed/team";
+import type { Seeder } from "./seed/types";
+
+/** Order matters: later seeders may reference rows earlier ones created. */
+const SEEDERS: readonly Seeder[] = [seedContacts, seedTeam, seedConversations, seedBroadcasts];
 
 export interface AppContainer {
   readonly repositories: ModuleRepositories;
   readonly tenant: TenantContext;
-}
-
-interface SeedRow {
-  readonly name: string;
-  readonly phone: string;
-  readonly consent: "unknown" | "opted_in" | "opted_out" | "do_not_contact";
-  readonly deliverability: "unknown" | "reachable" | "suppressed" | "manually_cleared";
-  readonly reasonCode: string | null;
-}
-
-/**
- * Covers every consent x deliverability combination the contacts screen
- * needs to render, not just the happy path — those two axes are the whole
- * point of the row (see AGENTS build brief for this app).
- */
-const SEED: readonly SeedRow[] = [
-  { name: "Asha Reddy", phone: "+919876543210", consent: "opted_in", deliverability: "reachable", reasonCode: null },
-  { name: "Vikram Nair", phone: "+919812345678", consent: "unknown", deliverability: "unknown", reasonCode: null },
-  { name: "Priya Sharma", phone: "+919800000001", consent: "opted_in", deliverability: "suppressed", reasonCode: "131026" },
-  { name: "Rahul Desai", phone: "+919800000002", consent: "opted_out", deliverability: "reachable", reasonCode: null },
-  { name: "Meena Iyer", phone: "+919800000003", consent: "do_not_contact", deliverability: "reachable", reasonCode: null },
-  { name: "Karthik Raman", phone: "+919800000004", consent: "opted_in", deliverability: "manually_cleared", reasonCode: null },
-  { name: "Divya Menon", phone: "+919800000005", consent: "unknown", deliverability: "reachable", reasonCode: null },
-];
-
-async function seed(repositories: ModuleRepositories, tenant: TenantContext): Promise<void> {
-  const now = new Date().toISOString();
-
-  for (const row of SEED) {
-    const created = await repositories.contacts.create(tenant, {
-      phoneNumber: row.phone as unknown as PhoneNumber,
-      displayName: row.name,
-      email: null,
-      company: null,
-      consentState: row.consent,
-      ...(row.consent === "opted_out" || row.consent === "do_not_contact"
-        ? { optedOutAt: now, optOutSource: "operator", optOutEvidence: "seed data" }
-        : {}),
-    });
-    if (row.deliverability !== "unknown") {
-      await repositories.contacts.applyDeliverabilityPatch(tenant, created.id, {
-        state: row.deliverability,
-        suppressedAt: row.reasonCode === null ? null : now,
-        suppressedReasonCode: row.reasonCode,
-        suppressionStrikes: row.reasonCode === null ? 0 : 1,
-      });
-    }
-  }
+  readonly ownerUserId: string;
 }
 
 async function build(): Promise<AppContainer> {
@@ -99,9 +60,11 @@ async function build(): Promise<AppContainer> {
   const repositories = buildModuleRepositories(database);
   const tenant: TenantContext = { tenantId: accountId as never };
 
-  await seed(repositories, tenant);
+  for (const seeder of SEEDERS) {
+    await seeder({ repositories, tenant, ownerUserId: ownerId, now, database });
+  }
 
-  return { repositories, tenant };
+  return { repositories, tenant, ownerUserId: ownerId };
 }
 
 declare global {
