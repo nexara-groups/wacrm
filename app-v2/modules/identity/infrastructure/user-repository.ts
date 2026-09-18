@@ -72,7 +72,7 @@ export class SqlUserRepository implements UserRepositoryPort {
     // `tenant_id` is still part of the column list, so a genuine tenant
     // value always travels with every row this method can return.
     const { rows } = await this.db.query<Row>(
-      `select ${USER_COLUMNS} from users where user_id = $1`,
+      `select ${USER_COLUMNS} from users where user_id = $1 and tenant_id is not null`,
       [id],
     );
     return rows[0] === undefined ? null : toUserRecord(rows[0]);

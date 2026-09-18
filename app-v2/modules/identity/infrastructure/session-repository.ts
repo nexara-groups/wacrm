@@ -51,7 +51,7 @@ export class SqlSessionRepository implements SessionRepositoryPort {
 
   async findById(id: string): Promise<SessionRecord | null> {
     const { rows } = await this.db.query<Row>(
-      `select ${SESSION_COLUMNS} from sessions where id = $1`,
+      `select ${SESSION_COLUMNS} from sessions where id = $1 and account_id is not null`,
       [id],
     );
     return rows[0] === undefined ? null : toSessionRecord(rows[0]);
@@ -87,7 +87,7 @@ export class SqlSessionRepository implements SessionRepositoryPort {
 
   async listForUser(userId: UserId): Promise<readonly SessionRecord[]> {
     const { rows } = await this.db.query<Row>(
-      `select ${SESSION_COLUMNS} from sessions where user_id = $1 order by created_at`,
+      `select ${SESSION_COLUMNS} from sessions where user_id = $1 and account_id is not null order by created_at`,
       [userId],
     );
     return rows.map(toSessionRecord);
