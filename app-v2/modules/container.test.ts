@@ -50,6 +50,10 @@ describe("every wired repository reaches the real schema", () => {
     await expect(r.whatsappConfig.listByAccount("acct-probe" as never)).resolves.toEqual([]);
     await expect(r.onboarding.findCurrentForAccount(tenant)).resolves.toBeNull();
 
+    const platformPrincipal = { userId: "probe-staff", tenantId: "n/a", email: "staff@test", platformRole: "platform_support" } as never;
+    await expect(r.complianceCases.findActiveForAccount(platformPrincipal, "acct-probe")).resolves.toEqual([]);
+    await expect(r.platformRoleGrants.findActiveForUser(platformPrincipal, "probe-user")).resolves.toBeNull();
+
     await db.dispose();
   });
 
@@ -61,10 +65,10 @@ describe("every wired repository reaches the real schema", () => {
     const keys = Object.keys(buildModuleRepositories(db)).sort();
     expect(keys).toEqual(
       [
-        "broadcastRecipients", "broadcasts", "contactState", "contacts",
-        "conversations", "deviceInstallations", "emailTokens", "messageTemplates",
-        "messages", "onboarding", "refreshTokens", "seats", "sessions",
-        "users", "webhookEvents", "whatsappConfig",
+        "broadcastRecipients", "broadcasts", "complianceCases", "contactState", "contacts",
+        "conversations", "deviceInstallations", "emailTokens", "impersonation", "messageTemplates",
+        "messages", "onboarding", "platformAuditLog", "platformRoleGrants", "refreshTokens",
+        "seats", "sessions", "users", "webhookEvents", "whatsappConfig",
       ].sort(),
     );
     await db.dispose();

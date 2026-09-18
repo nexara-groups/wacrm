@@ -68,6 +68,17 @@ import type {
 import type { RefreshTokenPort } from "./identity/domain/refresh-token-rotation";
 import type { EmailTokenPort } from "./identity/domain/email-tokens";
 
+import { SqlPlatformAuditLogRepository } from "./platform-admin/infrastructure/audit-log-repository";
+import { SqlPlatformRoleGrantRepository } from "./platform-admin/infrastructure/platform-role-grant-repository";
+import { SqlComplianceCaseRepository } from "./platform-admin/infrastructure/compliance-case-repository";
+import { SqlImpersonationRepository } from "./platform-admin/infrastructure/impersonation-repository";
+import type {
+  ComplianceCasePort,
+  ImpersonationPort,
+  PlatformAuditLogPort,
+  PlatformRoleGrantPort,
+} from "./platform-admin/application/ports";
+
 /**
  * Repositories owned by WACRM business modules, as interfaces.
  *
@@ -100,6 +111,17 @@ export interface ModuleRepositories {
   readonly refreshTokens: RefreshTokenPort;
   readonly emailTokens: EmailTokenPort;
   readonly deviceInstallations: DeviceInstallationRepositoryPort;
+
+  // platform-admin — cross-tenant oversight ports only (SUPER_ADMIN_CONSOLE.md).
+  // `fleetOverview`, `billingOps` and `supportTools` are NOT wired here: they
+  // need a fleet rollup table and account billing/status columns that do not
+  // exist in any applied migration yet (see modules/platform-admin/infrastructure
+  // file headers / the delivery report for the exact gap) — not stubbed rather
+  // than shipping a query against columns that were never added.
+  readonly platformAuditLog: PlatformAuditLogPort;
+  readonly platformRoleGrants: PlatformRoleGrantPort;
+  readonly complianceCases: ComplianceCasePort;
+  readonly impersonation: ImpersonationPort;
 }
 
 export interface ModuleServices {
@@ -162,5 +184,10 @@ export function buildModuleRepositories(
     refreshTokens: new SqlRefreshTokenRepository(database),
     emailTokens: new SqlEmailTokenRepository(database),
     deviceInstallations: new SqlDeviceInstallationRepository(database),
+
+    platformAuditLog: new SqlPlatformAuditLogRepository(database),
+    platformRoleGrants: new SqlPlatformRoleGrantRepository(database),
+    complianceCases: new SqlComplianceCaseRepository(database),
+    impersonation: new SqlImpersonationRepository(database),
   };
 }
