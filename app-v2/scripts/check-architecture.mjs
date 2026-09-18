@@ -79,6 +79,23 @@ for (const file of SCAN_ROOTS.flatMap((root) => [...walk(root)])) {
     }
   }
 
+  // Rule 2b — no interactive transactions in a module's infrastructure.
+  //
+  // `D1DatabaseProvider.transaction()` throws unconditionally: D1 has no
+  // interactive transactions. A repository written on `transaction()`
+  // therefore compiles, passes every sql.js-backed test, and then throws on
+  // the production target — a false green that only shows up in production.
+  // The operational store is still undecided (DATABASE_DECISION.md), so
+  // repositories may use only capabilities BOTH candidates support.
+  // `batch()` is atomic on D1, Postgres and sql.js alike.
+  if (/^modules\/[^/]+\/infrastructure\//.test(norm) && !norm.endsWith(".test.ts")) {
+    if (/\.transaction\s*\(/.test(text.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " "))) {
+      violations.push(
+        `  x ${norm} uses .transaction() — D1 has none; use .batch() for atomic multi-statement writes`,
+      );
+    }
+  }
+
   // Rule 3 — tenant safety: every SQL statement in an infrastructure layer must
   // scope to the tenant column. This codebase's tenant column is `account_id`
   // (see 0001_identity.sql); `tenant_id` is accepted for framework-level tables

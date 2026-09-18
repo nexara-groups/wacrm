@@ -13,16 +13,20 @@
  * table pair is the exception); `account_id` IS this table's tenant column,
  * i.e. its tenant_id equivalent, and every query below scopes on it.
  *
- * Recipient fan-out can be thousands of rows: `createMany` batches its
- * INSERTs, and every recipient read is either capped by an explicit `limit`
- * or paginated with a keyset cursor on `id` — never a single unbounded
- * fetch-all.
+ * Recipient fan-out can be thousands of rows: `createMany` chunks its
+ * INSERTs (staying under D1's per-statement bound-parameter ceiling) and
+ * commits every chunk as ONE atomic `.batch()` call — never a bare
+ * `.transaction()`, which is only a real BEGIN/COMMIT on Postgres and
+ * throws on `D1DatabaseProvider` — and each chunk is `on conflict ... do
+ * nothing` so re-running it is idempotent. Every recipient read is either
+ * capped by an explicit `limit` or paginated with a keyset cursor on `id`
+ * — never a single unbounded fetch-all.
  *
  * All ids are application-generated (`crypto.randomUUID()`), all timestamps
  * are ISO-8601 strings produced by application code — matching every other
  * migration/repository pair in this set (see 0001_identity.sql's header).
  */
-import type { DatabaseProvider, Row } from "@nexara/core/database";
+import type { AtomicBatchDatabaseProvider, BatchQuery, DatabaseProvider, Row } from "@nexara/core/database";
 import { AccountId, BroadcastId, ContactId, TemplateId, UserId } from "@packages/domain/src/ids";
 import type { BroadcastRecipient } from "@packages/domain/src/entities/broadcast-recipient";
 import type { BroadcastStatus } from "@packages/domain/src/status/broadcast-status";
@@ -274,13 +278,31 @@ const RECIPIENT_COLUMNS = `id, account_id, broadcast_id, contact_id, status, err
        created_at, updated_at`;
 
 export class SqlBroadcastRecipientRepository implements BroadcastRecipientRepositoryPort {
-  constructor(private readonly db: DatabaseProvider) {}
+  // Needs `.batch()` (not just `.query()`) so a multi-chunk fan-out commits
+  // atomically on D1 too — `DatabaseProvider.transaction()` is a real
+  // BEGIN/COMMIT only on Postgres; D1DatabaseProvider.transaction() throws
+  // ("D1 does not support interactive transactions; use batch instead"),
+  // so an interactive transaction here would work in tests (sql.js) and
+  // break in production. `batch()` is atomic on every provider this module
+  // ships against (D1, Postgres, sql.js) — see each provider's own class
+  // docstring.
+  constructor(private readonly db: AtomicBatchDatabaseProvider) {}
 
+  /**
+   * Batched + idempotent: chunked to stay well under D1's per-statement
+   * bound-parameter ceiling, all chunks committed as ONE atomic `.batch()`
+   * call (never partially enqueued if a later chunk fails), and each
+   * statement carries `on conflict (broadcast_id, contact_id) do nothing`
+   * so calling this twice for the same broadcast — e.g. a retried/duplicated
+   * `startBroadcast` — cannot double-enqueue a contact. That idempotency is
+   * exactly what 0009_broadcasts.sql's `idx_broadcast_recipients_unique`
+   * header comment says this method relies on.
+   */
   async createMany(inputs: readonly NewBroadcastRecipientInput[]): Promise<void> {
     if (inputs.length === 0) return;
     const now = new Date().toISOString();
 
-    for (const batch of chunk(inputs, RECIPIENT_INSERT_CHUNK_SIZE)) {
+    const queries: BatchQuery[] = chunk(inputs, RECIPIENT_INSERT_CHUNK_SIZE).map((batch) => {
       const params: unknown[] = [];
       const valueTuples = batch.map((input, i) => {
         const base = i * PARAMS_PER_RECIPIENT_ROW;
@@ -296,14 +318,17 @@ export class SqlBroadcastRecipientRepository implements BroadcastRecipientReposi
         return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`;
       });
 
-      await this.db.query(
-        `insert into broadcast_recipients
-           (id, account_id, broadcast_id, contact_id, status, created_at, updated_at)
-         values ${valueTuples.join(", ")}
-         -- tenant_id equivalent for this table: account_id`,
+      return {
+        sql: `insert into broadcast_recipients
+                (id, account_id, broadcast_id, contact_id, status, created_at, updated_at)
+              values ${valueTuples.join(", ")}
+              on conflict (broadcast_id, contact_id) do nothing
+              -- tenant_id equivalent for this table: account_id`,
         params,
-      );
-    }
+      };
+    });
+
+    await this.db.batch(queries);
   }
 
   async listByBroadcast(
@@ -324,6 +349,17 @@ export class SqlBroadcastRecipientRepository implements BroadcastRecipientReposi
     return toPage(rows, effectiveLimit, toBroadcastRecipient, (r) => r.id);
   }
 
+  /**
+   * The queue-drain read. `disposition <> 'PERMANENT_NUMBER'` is
+   * defense-in-depth, not the primary guarantee: `recipient-outcome.ts`'s
+   * `applyRecipientFailure` already moves a PERMANENT_NUMBER recipient to
+   * the terminal `failed` status (retryMax 0 => shouldRetry false), so it
+   * should never be `pending` in the first place. But retrying a number
+   * Meta said can never receive messages is the exact bug this module
+   * exists to fix, so this query never trusts that invariant alone — a
+   * recipient with this disposition is excluded here even if some other
+   * bug left it `pending`.
+   */
   async listDueForSend(
     accountId: AccountId,
     broadcastId: BroadcastId,
@@ -335,6 +371,7 @@ export class SqlBroadcastRecipientRepository implements BroadcastRecipientReposi
       `select ${RECIPIENT_COLUMNS} from broadcast_recipients
        where account_id = $1 and broadcast_id = $2 and status = 'pending'
          and (next_attempt_at is null or next_attempt_at <= $3)
+         and (disposition is null or disposition <> 'PERMANENT_NUMBER')
        order by created_at asc, id asc
        limit $4
        -- tenant_id equivalent for this table: account_id`,

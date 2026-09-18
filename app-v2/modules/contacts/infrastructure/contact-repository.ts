@@ -1,5 +1,13 @@
 /**
- * SQL implementation of `ContactRepository` over `DatabaseProvider`.
+ * SQL implementation of `ContactRepository` over `AtomicBatchDatabaseProvider`.
+ *
+ * Multi-statement writes use `batch()`, NEVER `transaction()`.
+ * `D1DatabaseProvider.transaction()` throws unconditionally — D1 has no
+ * interactive transactions — so a repository built on `transaction()`
+ * compiles, passes every sql.js test, and then throws on the production
+ * target. Since the operational store is still undecided
+ * (DATABASE_DECISION.md), repositories may only use capabilities BOTH
+ * candidates support. `batch()` is atomic on D1, Postgres and sql.js alike.
  *
  * Every statement filters `account_id` — the architecture guard enforces
  * this, and since the Supabase exit moved 163 RLS policies out of the
@@ -16,7 +24,7 @@
  * columns, tags, custom fields, import audit).
  */
 import { randomUUID } from "node:crypto";
-import type { DatabaseProvider, Row } from "@nexara/core/database";
+import type { AtomicBatchDatabaseProvider, BatchQuery, Row } from "@nexara/core/database";
 import type { TenantContext } from "@nexara/core/context";
 import { canonicalTagKey } from "../domain/tags";
 import type { Tag, TagFilter, TagId } from "../domain/tags";
@@ -107,7 +115,7 @@ function encodeCustomValue(value: CustomFieldValue): string {
 }
 
 export class SqlContactRepository implements ContactRepository {
-  constructor(private readonly db: DatabaseProvider) {}
+  constructor(private readonly db: AtomicBatchDatabaseProvider) {}
 
   private now(): string {
     return new Date().toISOString();
@@ -387,20 +395,19 @@ export class SqlContactRepository implements ContactRepository {
     contactId: ContactId,
     tagIds: readonly TagId[],
   ): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.query(`delete from contact_tags where account_id = $1 and contact_id = $2`, [
-        tenant.tenantId,
-        contactId,
-      ]);
-      const now = this.now();
-      for (const tagId of tagIds) {
-        await tx.query(
-          `insert into contact_tags (account_id, contact_id, tag_id, created_at)
-           values ($1, $2, $3, $4)`,
-          [tenant.tenantId, contactId, tagId, now],
-        );
-      }
-    });
+    const now = this.now();
+    const queries: BatchQuery[] = [
+      {
+        sql: `delete from contact_tags where account_id = $1 and contact_id = $2`,
+        params: [tenant.tenantId, contactId],
+      },
+      ...tagIds.map((tagId) => ({
+        sql: `insert into contact_tags (account_id, contact_id, tag_id, created_at)
+              values ($1, $2, $3, $4)`,
+        params: [tenant.tenantId, contactId, tagId, now],
+      })),
+    ];
+    await this.db.batch(queries);
   }
 
   async listTagIdsForContact(
@@ -493,21 +500,20 @@ export class SqlContactRepository implements ContactRepository {
     contactId: ContactId,
     values: readonly ContactCustomFieldValue[],
   ): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      const now = this.now();
-      for (const v of values) {
-        await tx.query(
-          `delete from contact_custom_values
-            where account_id = $1 and contact_id = $2 and field_id = $3`,
-          [tenant.tenantId, contactId, v.fieldId],
-        );
-        await tx.query(
-          `insert into contact_custom_values (account_id, contact_id, field_id, value, updated_at)
-           values ($1, $2, $3, $4, $5)`,
-          [tenant.tenantId, contactId, v.fieldId, encodeCustomValue(v.value), now],
-        );
-      }
-    });
+    const now = this.now();
+    const queries: BatchQuery[] = values.flatMap((v) => [
+      {
+        sql: `delete from contact_custom_values
+               where account_id = $1 and contact_id = $2 and field_id = $3`,
+        params: [tenant.tenantId, contactId, v.fieldId],
+      },
+      {
+        sql: `insert into contact_custom_values (account_id, contact_id, field_id, value, updated_at)
+              values ($1, $2, $3, $4, $5)`,
+        params: [tenant.tenantId, contactId, v.fieldId, encodeCustomValue(v.value), now],
+      },
+    ]);
+    if (queries.length > 0) await this.db.batch(queries);
   }
 
   // -------------------------------------------------------------------------
@@ -524,13 +530,15 @@ export class SqlContactRepository implements ContactRepository {
     run: NewContactImportRun,
   ): Promise<ContactImportRun> {
     const id = randomUUID();
-    await this.db.transaction(async (tx) => {
-      await tx.query(
-        `insert into contact_imports
-           (id, account_id, started_by_user_id, file_name, total_rows,
-            created_count, updated_count, rejected_count, started_at, completed_at)
-         values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9)`,
-        [
+    // The run row and its rejections land together or not at all: a run that
+    // reported 12 rejections but persisted none is worse than no audit at all.
+    const queries: BatchQuery[] = [
+      {
+        sql: `insert into contact_imports
+                (id, account_id, started_by_user_id, file_name, total_rows,
+                 created_count, updated_count, rejected_count, started_at, completed_at)
+              values ($1, $2, $3, null, $4, $5, $6, $7, $8, $9)`,
+        params: [
           id,
           tenant.tenantId,
           run.actorUserId,
@@ -541,16 +549,22 @@ export class SqlContactRepository implements ContactRepository {
           run.startedAt,
           run.finishedAt,
         ],
-      );
-      for (const rejection of run.rejectedRows) {
-        await tx.query(
-          `insert into contact_import_rejections
-             (id, account_id, import_id, row_number, raw_phone, reason, created_at)
-           values ($1, $2, $3, $4, null, $5, $6)`,
-          [randomUUID(), tenant.tenantId, id, rejection.rowNumber, rejection.reason, run.finishedAt],
-        );
-      }
-    });
+      },
+      ...run.rejectedRows.map((rejection) => ({
+        sql: `insert into contact_import_rejections
+                (id, account_id, import_id, row_number, raw_phone, reason, created_at)
+              values ($1, $2, $3, $4, null, $5, $6)`,
+        params: [
+          randomUUID(),
+          tenant.tenantId,
+          id,
+          rejection.rowNumber,
+          rejection.reason,
+          run.finishedAt,
+        ],
+      })),
+    ];
+    await this.db.batch(queries);
     return { ...run, id, accountId: tenant.tenantId };
   }
 }

@@ -15,7 +15,7 @@
  * Like the framework container, this is one of the few files allowed to name
  * concrete implementations. Everything downstream receives the interfaces.
  */
-import type { DatabaseProvider } from "@nexara/core/database";
+import type { AtomicBatchDatabaseProvider } from "@nexara/core/database";
 import type { Services } from "@nexara/core/container";
 import { SqlContactRepository } from "./contacts/infrastructure/contact-repository";
 import type { ContactRepository } from "./contacts/application/ports";
@@ -45,17 +45,30 @@ export interface ModuleServices {
  * (still open, per DATABASE_DECISION.md) a single-place change.
  */
 export function createModuleServices(services: Services): ModuleServices {
+  if (!("batch" in services.database) || typeof services.database.batch !== "function") {
+    throw new Error(
+      "module repositories require a database provider with atomic batch support " +
+        `(got "${services.database.name}")`,
+    );
+  }
   return {
-    repositories: buildModuleRepositories(services.database),
+    repositories: buildModuleRepositories(services.database as AtomicBatchDatabaseProvider),
   };
 }
 
 /**
  * Exposed separately so a test or the dev harness can build the module layer
- * over a bare `DatabaseProvider` without standing up the whole framework
- * container (which needs Cloudflare bindings).
+ * over a bare provider without standing up the whole framework container
+ * (which needs Cloudflare bindings).
+ *
+ * Requires `AtomicBatchDatabaseProvider`, not plain `DatabaseProvider`:
+ * repositories perform multi-statement writes atomically via `batch()`, which
+ * is the only atomic primitive BOTH candidate stores support. D1 has no
+ * interactive transactions at all.
  */
-export function buildModuleRepositories(database: DatabaseProvider): ModuleRepositories {
+export function buildModuleRepositories(
+  database: AtomicBatchDatabaseProvider,
+): ModuleRepositories {
   return {
     contacts: new SqlContactRepository(database),
   };
