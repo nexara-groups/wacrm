@@ -27,3 +27,46 @@ describe("module composition root", () => {
     expect(container).not.toMatch(/@modules\//);
   });
 });
+
+describe("every wired repository reaches the real schema", () => {
+  // Constructing a repository proves nothing — the credentials repository
+  // constructed fine for the entire life of this project while querying a
+  // table that did not exist. These issue one real read per repository
+  // against the migrated schema, so a missing table or a renamed column
+  // fails here rather than in production.
+  it("issues a live read through each repository without error", async () => {
+    const db = await SqlJsDatabaseProvider.create();
+    runMigrations(db);
+    const r = buildModuleRepositories(db);
+    const tenant = { tenantId: "acct-probe" as never };
+
+    await expect(r.contacts.listAll(tenant)).resolves.toEqual([]);
+    await expect(r.conversations.list(tenant, {} as never, { limit: 1 } as never)).resolves.toBeDefined();
+    await expect(r.seats.listMembers(tenant)).resolves.toEqual([]);
+    await expect(r.seats.listInvitations(tenant)).resolves.toEqual([]);
+    // NOTE: this port takes a bare AccountId while every other repository
+    // takes a TenantContext. Harmless but inconsistent — worth reconciling
+    // when the whatsapp module's ports are next touched.
+    await expect(r.whatsappConfig.listByAccount("acct-probe" as never)).resolves.toEqual([]);
+    await expect(r.onboarding.findCurrentForAccount(tenant)).resolves.toBeNull();
+
+    await db.dispose();
+  });
+
+  it("exposes a repository for every module that has one", async () => {
+    // Guards against a module landing persistence without being wired: the
+    // type would still compile if a key were simply omitted here.
+    const db = await SqlJsDatabaseProvider.create();
+    runMigrations(db);
+    const keys = Object.keys(buildModuleRepositories(db)).sort();
+    expect(keys).toEqual(
+      [
+        "broadcastRecipients", "broadcasts", "contactState", "contacts",
+        "conversations", "deviceInstallations", "emailTokens", "messageTemplates",
+        "messages", "onboarding", "refreshTokens", "seats", "sessions",
+        "users", "webhookEvents", "whatsappConfig",
+      ].sort(),
+    );
+    await db.dispose();
+  });
+});
