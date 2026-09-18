@@ -21,8 +21,8 @@ import { buildAudience, formatAudiencePreview } from "@modules/broadcasts/domain
 import { classify } from "@modules/messaging-errors/domain/meta-error-classifier";
 import { resolveSeatLimit } from "@modules/organizations/domain/seat-limit";
 import { parsePhoneNumber } from "@packages/domain";
-import { SqlContactRepository } from "@modules/contacts/infrastructure/contact-repository";
-import type { ContactRecord } from "@modules/contacts/application/ports";
+import { buildModuleRepositories } from "@modules/container";
+import type { ContactRecord, ContactRepository } from "@modules/contacts/application/ports";
 import type { PhoneNumber } from "@packages/domain";
 import type { TenantContext } from "@nexara/core/context";
 import { PAGE } from "./page";
@@ -31,7 +31,7 @@ const PORT = Number(process.env.PORT ?? 8787);
 const ACCOUNT_ID = "acct-demo";
 
 let db: SqlJsDatabaseProvider;
-let contacts: SqlContactRepository;
+let contacts: ContactRepository;
 
 /** Every read below goes through the repository, which scopes on this. */
 const TENANT: TenantContext = { tenantId: ACCOUNT_ID as never };
@@ -109,9 +109,9 @@ async function route(url: URL): Promise<[number, Record<string, string>, string]
 
     /** Every contact with the two independent state axes that gate sending. */
     case "/api/contacts": {
-      const contacts = await loadContacts();
+      const rows = await loadContacts();
       return json(
-        contacts.map((c) => ({
+        rows.map((c) => ({
           name: c.displayName,
           phone: c.phoneNumber,
           consentState: c.consentState,
@@ -223,7 +223,9 @@ async function route(url: URL): Promise<[number, Record<string, string>, string]
 async function main(): Promise<void> {
   db = await SqlJsDatabaseProvider.create();
   const applied = runMigrations(db);
-  contacts = new SqlContactRepository(db);
+  // Through the module composition root, so the harness wires modules the
+  // same way the app will rather than newing up implementations itself.
+  contacts = buildModuleRepositories(db).contacts;
   await seed();
 
   createServer((req, res) => {
