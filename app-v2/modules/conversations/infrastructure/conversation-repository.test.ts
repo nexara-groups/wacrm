@@ -172,3 +172,60 @@ describe("SqlConversationRepository", () => {
     expect(advanced.items.map((c) => c.id)).toEqual([c1.id]);
   });
 });
+
+describe("updated_at is the sync cursor and MUST advance on every save", () => {
+  // The whole incremental-sync design rests on this one property, and it is
+  // guaranteed only by the repository stamping its own clock: the domain is
+  // deliberately clock-free ("callers supply timestamps") and the application
+  // layer never sets updatedAt before save(). Nothing else enforces it, so a
+  // future refactor that "simplifies" save() into trusting the passed-in
+  // record would silently stop advancing the cursor — and clients would stop
+  // receiving changes, with no test failing and no error anywhere.
+  it("advances updated_at even when the domain returns an unchanged timestamp", async () => {
+    const created = await repo.create(A, {
+      id: conversationId("33333333-3333-3333-3333-333333333333"),
+      contactId: contact("c-9"),
+      now: "2026-01-01T00:00:00.000Z",
+    });
+
+    // recordInboundMessage is pure and leaves updatedAt exactly as it found
+    // it — this assertion documents the gap the repository compensates for.
+    const afterInbound = recordInboundMessage(created, "2026-01-02T00:00:00.000Z");
+    expect(afterInbound.updatedAt).toBe(created.updatedAt);
+
+    const saved = await repo.save(A, afterInbound);
+    expect(saved).not.toBeNull();
+    expect(saved!.updatedAt > created.updatedAt).toBe(true);
+  });
+
+  it("a saved change is visible to a cursor positioned at the previous value", async () => {
+    // The property that actually matters to a client: after a write, polling
+    // with the cursor you last held returns the changed row.
+    const created = await repo.create(A, {
+      id: conversationId("44444444-4444-4444-4444-444444444444"),
+      contactId: contact("c-10"),
+      now: "2026-01-01T00:00:00.000Z",
+    });
+    const cursorBefore = { updatedAt: created.updatedAt, seenIds: [created.id] };
+    expect((await repo.listChangedSince(A, cursorBefore, 10)).items).toHaveLength(0);
+
+    const saved = await repo.save(A, recordInboundMessage(created, "2026-01-02T00:00:00.000Z"));
+    expect(saved).not.toBeNull();
+
+    const changed = await repo.listChangedSince(A, cursorBefore, 10);
+    expect(changed.items.map((c) => c.id)).toContain(created.id);
+  });
+
+  it("never moves updated_at backwards", async () => {
+    const created = await repo.create(A, {
+      id: conversationId("55555555-5555-5555-5555-555555555555"),
+      contactId: contact("c-11"),
+      now: "2026-01-01T00:00:00.000Z",
+    });
+    // A caller handing back a far-future timestamp must not be clobbered by
+    // the repository's own (earlier) clock — monotonic, not "always now".
+    const future = "2099-01-01T00:00:00.000Z";
+    const saved = await repo.save(A, { ...created, updatedAt: future as never });
+    expect(saved!.updatedAt).toBe(future);
+  });
+});
