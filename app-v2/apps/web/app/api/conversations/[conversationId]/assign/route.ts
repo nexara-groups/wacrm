@@ -13,6 +13,7 @@ import { assignConversation } from "@modules/conversations/domain/conversation";
 import { getContainer } from "@/lib/container";
 import { toConversationDTO } from "@/lib/conversation-dto";
 import {
+  fail,
   internalError,
   isZodError,
   notFoundError,
@@ -36,6 +37,30 @@ export async function POST(request: NextRequest, context: RouteContext): Promise
     });
 
     const { repositories, tenant } = await getContainer();
+
+    // The schema validates that `assignedUserId` is a well-formed UUID, and
+    // that is all it can validate — shape is not membership. Without this
+    // check any syntactically-valid UUID was accepted, so a conversation
+    // could be assigned to a user who does not exist, or who belongs to a
+    // different account, and the assignment would simply sit there
+    // pointing at nobody. The tenant comparison matters as much as the
+    // existence one: `UserRepositoryPort.findById` is keyed by user id
+    // alone, with no tenant argument, so it will happily return another
+    // account's user.
+    if (assignedUserId !== null) {
+      const assignee = await repositories.users.findById(assignedUserId);
+      if (assignee === null || assignee.accountId !== tenant.tenantId) {
+        return fail(
+          {
+            code: "invalid_assignee",
+            laymanMessage: "That teammate isn't part of this account.",
+            fieldErrors: { assignedUserId: ["Not a member of this account."] },
+          },
+          422,
+        );
+      }
+    }
+
     const conversation = await repositories.conversations.findById(tenant, conversationId);
     if (conversation === null) return notFoundError("conversation");
 

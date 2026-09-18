@@ -20,11 +20,20 @@ import { messageSchema } from "./messages";
 // The Conversation resource
 // ---------------------------------------------------------------------------
 
+export const conversationStatusSchema = z.enum(["open", "closed"]);
+export type ConversationStatus = z.infer<typeof conversationStatusSchema>;
+
 export const conversationSchema = z.object({
   id: conversationIdSchema,
   accountId: accountIdSchema,
   contactId: contactIdSchema,
   assignedUserId: userIdSchema.nullable(),
+  /**
+   * open/closed. `ConversationRecord` has always carried this; the wire
+   * shape did not, so a closed conversation was indistinguishable from an
+   * open one and the inbox could neither show nor filter by it.
+   */
+  status: conversationStatusSchema,
   lastMessageAt: isoDateTimeSchema.nullable(),
   unreadCount: z.number().int().min(0),
   createdAt: isoDateTimeSchema,
@@ -36,8 +45,22 @@ export type Conversation = z.infer<typeof conversationSchema>;
 // List — filterable
 // ---------------------------------------------------------------------------
 
+/**
+ * "unassigned" is a real filter value, not a missing one.
+ *
+ * `ConversationFilter.assignedUserId` distinguishes three cases —
+ * `undefined` (no filter), `null` (only unassigned), a UserId (only that
+ * assignee). A bare `userIdSchema.optional()` could express only two of
+ * them, so "show me what nobody has picked up" — the single most useful
+ * view in a shared inbox — could not be requested at all, and the UI was
+ * reduced to filtering one page in the browser.
+ */
+export const assignedUserFilterSchema = z.union([userIdSchema, z.literal("unassigned")]);
+export type AssignedUserFilter = z.infer<typeof assignedUserFilterSchema>;
+
 export const listConversationsQuerySchema = paginationQuerySchema.extend({
-  assignedUserId: userIdSchema.optional(),
+  assignedUserId: assignedUserFilterSchema.optional(),
+  status: conversationStatusSchema.optional(),
   /** `true` = only conversations with `unreadCount > 0`; `false`/omitted = all.
    *  See `booleanQueryFlagSchema` for why this is not `z.coerce.boolean()`. */
   unreadOnly: booleanQueryFlagSchema.optional(),

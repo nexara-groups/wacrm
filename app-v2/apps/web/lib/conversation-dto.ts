@@ -6,15 +6,10 @@
  * contract schema so a field that drifts fails loudly instead of shipping
  * quietly wrong.
  *
- * GAP (see YOUR FILES / conversations route comments for the full writeup):
- * `ConversationRecord` carries `status` ("open" | "closed") and
- * `lastInboundAt`, but `conversationSchema` has neither field — there is no
- * open/closed status anywhere on the wire `Conversation`. `contactSchema
- * .parse` below therefore silently DROPS `status`/`lastInboundAt` (zod
- * strips unrecognized keys by default); that is intentional here, not a
- * bug, but it means no route or screen built against this DTO can ever
- * expose a conversation's open/closed state without a contract change,
- * which is out of scope for this task (packages/** is not modifiable).
+ * `status` now crosses the wire. It previously did not, so zod stripped it
+ * and a closed conversation looked exactly like an open one to every
+ * screen. `lastInboundAt` is still dropped deliberately — it drives the
+ * 24-hour messaging window server-side and no screen needs it.
  */
 import { conversationSchema, type Conversation } from "@packages/contracts/src/conversations";
 import type { ConversationRecord } from "@modules/conversations/domain/conversation";
@@ -25,6 +20,7 @@ export function toConversationDTO(record: ConversationRecord): Conversation {
     accountId: record.accountId,
     contactId: record.contactId,
     assignedUserId: record.assignedUserId,
+    status: record.status,
     lastMessageAt: record.lastMessageAt,
     unreadCount: record.unreadCount,
     createdAt: record.createdAt,

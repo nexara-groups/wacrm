@@ -32,7 +32,7 @@ describe("conversations resource", () => {
     const response = {
       ok: true,
       changes: [
-        { changeType: "upserted", conversation: { id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", accountId: "4fa85f64-5717-4562-b3fc-2c963f66afa6", contactId: "5fa85f64-5717-4562-b3fc-2c963f66afa6", assignedUserId: null, lastMessageAt: null, unreadCount: 0, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" } },
+        { changeType: "upserted", conversation: { id: "3fa85f64-5717-4562-b3fc-2c963f66afa6", accountId: "4fa85f64-5717-4562-b3fc-2c963f66afa6", contactId: "5fa85f64-5717-4562-b3fc-2c963f66afa6", assignedUserId: null, status: "open", lastMessageAt: null, unreadCount: 0, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" } },
         { changeType: "deleted", conversationId: "6fa85f64-5717-4562-b3fc-2c963f66afa6" },
       ],
       nextCursor: "cursor-abc",
