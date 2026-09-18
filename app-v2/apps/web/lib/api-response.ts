@@ -8,6 +8,7 @@
 import { NextResponse } from "next/server";
 import { ZodError, type z } from "zod";
 import type { ErrorEnvelope } from "@packages/contracts/src/common/error-envelope";
+import { AppError } from "@shared/errors";
 
 export function ok<T extends Record<string, unknown>>(
   payload: T,
@@ -44,7 +45,56 @@ export function notFoundError(resource: string): NextResponse {
   );
 }
 
+/**
+ * Maps the framework's `AppError` onto the right HTTP status.
+ *
+ * Without this, an `AppError.unauthenticated` thrown deep in a request —
+ * which is exactly what `getContainer()` does when a session cookie is
+ * present but no longer verifies (expired, or revoked at logout) — fell
+ * through to `internalError` and went out as a 500. A stale session is a
+ * completely ordinary event, not a server fault: reporting it as one tells
+ * the client to retry, hides a real 500 among the noise, and leaks the
+ * message as an `operatorHint`. The edge proxy only checks that a cookie is
+ * PRESENT, so this is the path every expired session actually takes.
+ */
+const APP_ERROR_STATUS: Record<string, { status: number; code: string; laymanMessage: string }> = {
+  UNAUTHENTICATED: {
+    status: 401,
+    code: "unauthenticated",
+    laymanMessage: "Your session has expired. Please sign in again.",
+  },
+  FORBIDDEN: {
+    status: 403,
+    code: "forbidden",
+    laymanMessage: "You don't have access to this.",
+  },
+  NOT_FOUND: {
+    status: 404,
+    code: "not_found",
+    laymanMessage: "That couldn't be found.",
+  },
+  CONFLICT: {
+    status: 409,
+    code: "conflict",
+    laymanMessage: "That conflicts with something that already exists.",
+  },
+  VALIDATION: {
+    status: 400,
+    code: "validation_error",
+    laymanMessage: "That request wasn't quite right — check the highlighted fields.",
+  },
+};
+
 export function internalError(error: unknown): NextResponse {
+  if (error instanceof AppError) {
+    const mapped = APP_ERROR_STATUS[error.code];
+    if (mapped) {
+      return fail(
+        { code: mapped.code, laymanMessage: mapped.laymanMessage },
+        mapped.status,
+      );
+    }
+  }
   return fail(
     {
       code: "internal_error",
