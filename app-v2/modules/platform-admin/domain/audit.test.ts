@@ -49,16 +49,20 @@ describe("PlatformAuditEntry — append-only (SUPER_ADMIN_CONSOLE.md §5/§6)", 
   });
 
   it("PlatformAuditLogPort exposes no update/delete/remove/amend method — append-only by construction", () => {
-    // Build a minimal conforming implementation and assert, at the type
-    // level, that only `append` exists: adding any mutation method below
-    // would make `port` fail to satisfy `Record<Exclude<keyof typeof port, "append">, never>`.
+    // Append-only is about MUTATION, not about reads: `list` was added so
+    // the console could actually display the trail (an audit log nobody can
+    // read is decorative). What must stay impossible is changing or
+    // removing an entry once written, which the loop below asserts.
     const port: PlatformAuditLogPort = {
       async append() {
         /* no-op fake */
       },
+      async list() {
+        return [];
+      },
     };
     const keys = Object.keys(port);
-    expect(keys).toEqual(["append"]);
+    expect([...keys].sort()).toEqual(["append", "list"]);
     for (const forbidden of ["update", "delete", "remove", "amend", "patch", "edit"] as const) {
       expect(Object.prototype.hasOwnProperty.call(port, forbidden)).toBe(false);
       // @ts-expect-error — no such method exists on PlatformAuditLogPort.

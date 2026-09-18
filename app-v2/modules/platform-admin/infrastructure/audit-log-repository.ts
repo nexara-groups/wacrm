@@ -21,7 +21,12 @@
  */
 import type { AtomicBatchDatabaseProvider, BatchQuery, Row } from "@nexara/core/database";
 import { isPlatformRole } from "@nexara/core/rbac";
-import type { PlatformAuditEntry, PlatformAuditLogPort } from "../domain/audit";
+import type { PlatformAuditFilter, PlatformAuditEntry, PlatformAuditLogPort } from "../domain/audit";
+
+/** Hard ceiling on one audit read, whatever a caller asks for. A console
+ *  filter box is not a reason to pull an unbounded append-only table into
+ *  memory. */
+const MAX_AUDIT_PAGE = 500;
 
 const AUDIT_COLUMNS = `id, actor_user_id, platform_role, action, target_account_id,
   target_resource, reason, ip, user_agent, occurred_at, request_id`;
@@ -95,6 +100,44 @@ export class SqlPlatformAuditLogRepository implements PlatformAuditLogPort {
    * read helper the other repositories' tests (and a future audit-log
    * viewer) can use without duplicating the row mapping.
    */
+  /**
+   * The port's bounded read. Newest first — an audit-log viewer is opened
+   * to see what just happened, not what happened first.
+   *
+   * Predicates are appended positionally rather than interpolated, so a
+   * filter value can never become SQL.
+   */
+  async list(filter: PlatformAuditFilter, limit: number): Promise<readonly PlatformAuditEntry[]> {
+    const predicates: string[] = [];
+    const params: unknown[] = [];
+
+    if (filter.targetAccountId !== undefined) {
+      params.push(filter.targetAccountId);
+      predicates.push(`target_account_id = $${params.length}`);
+    }
+    if (filter.actor !== undefined) {
+      params.push(filter.actor);
+      predicates.push(`actor_user_id = $${params.length}`);
+    }
+    if (filter.since !== undefined) {
+      params.push(filter.since);
+      predicates.push(`occurred_at >= $${params.length}`);
+    }
+    params.push(Math.max(1, Math.min(limit, MAX_AUDIT_PAGE)));
+
+    const where = predicates.length === 0 ? "" : `where ${predicates.join(" and ")}`;
+    const { rows } = await this.db.query(
+      `-- tenant-scope-exempt: platform-admin audit trail — cross-account by
+       -- design, bounded by limit rather than by tenant (SUPER_ADMIN_CONSOLE.md §4).
+       select ${AUDIT_COLUMNS} from platform_audit_log
+        ${where}
+        order by occurred_at desc
+        limit $${params.length}`,
+      params,
+    );
+    return rows.map(toAuditEntry);
+  }
+
   async listForAccount(targetAccountId: string): Promise<readonly PlatformAuditEntry[]> {
     const { rows } = await this.db.query(
       // tenant-scope-exempt: platform-admin audit trail read, filtered to one

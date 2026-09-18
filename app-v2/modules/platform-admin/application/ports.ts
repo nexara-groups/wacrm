@@ -284,6 +284,23 @@ export interface PlatformRoleGrantPort {
   revoke(principal: VerifiedPlatformPrincipal, userId: UserId, reason: string): Promise<void>;
 
   findActiveForUser(principal: VerifiedPlatformPrincipal, userId: UserId): Promise<PlatformRoleGrant | null>;
+
+  /**
+   * "Does this user hold a platform grant at all?" — the entry point every
+   * other method presupposes an answer to.
+   *
+   * Without this, resolving your own status meant calling
+   * `findActiveForUser` with a fabricated principal carrying a made-up
+   * role. The lookup itself was safe (it filters on `userId`, and the
+   * principal only attributes the audit row), but the audit row is the
+   * problem: every visit to a platform page by an ordinary tenant user
+   * wrote an entry claiming that user held `platform_support`. An audit
+   * log that records roles nobody was granted is not evidence of anything.
+   *
+   * Takes no principal, because there is none yet, and audits the lookup
+   * truthfully as a self-lookup.
+   */
+  findOwnGrant(userId: UserId): Promise<PlatformRoleGrant | null>;
 }
 
 // ---------------------------------------------------------------------------

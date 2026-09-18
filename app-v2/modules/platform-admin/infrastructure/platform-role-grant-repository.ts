@@ -114,6 +114,41 @@ export class SqlPlatformRoleGrantRepository implements PlatformRoleGrantPort {
     ]);
   }
 
+  async findOwnGrant(userId: UserId): Promise<PlatformRoleGrant | null> {
+    const { rows } = await this.db.query(
+      `-- tenant-scope-exempt: platform_admins is the platform-role grant
+       -- table, keyed by user_id — not tenant-scoped (SUPER_ADMIN_CONSOLE.md §2).
+       select user_id, platform_role, granted_by, granted_at, revoked_at
+         from platform_admins where user_id = $1 and revoked_at is null`,
+      [userId],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      // No grant, so no platform event happened — an ordinary tenant user
+      // landing on a platform URL is not staff activity, and writing a row
+      // for it would fill the log with entries attributing a platform role
+      // to people who hold none. Refusal is still observable: the route
+      // returns 403, and whatever fronts it logs that.
+      return null;
+    }
+    const grant = toGrant(row);
+
+    // The role recorded is the one actually found, never a claimed one —
+    // that is the whole reason this method takes no principal.
+    const auditEntry = createAuditEntry({
+      id: randomUUID(),
+      actor: userId,
+      platformRole: grant.platformRole,
+      action: "platform_role:self_lookup",
+      targetResource: userId,
+      requestId: randomUUID(),
+    });
+    const q = auditInsertBatchQuery(auditEntry);
+    await this.db.query(q.sql, q.params);
+
+    return grant;
+  }
+
   async findActiveForUser(
     principal: VerifiedPlatformPrincipal,
     userId: UserId,

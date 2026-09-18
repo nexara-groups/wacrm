@@ -73,7 +73,31 @@ export function createAuditEntry(input: CreateAuditEntryInput): PlatformAuditEnt
  * verified platform principal — see `application/ports.ts`, which composes
  * this port alongside the module's other cross-tenant ports.
  */
+/** Narrowing for an audit-log read. Every field is optional; omitting all of
+ *  them reads the whole fleet's trail, which is legitimate here (§4) and is
+ *  why the read is bounded by `limit` rather than by tenant. */
+export interface PlatformAuditFilter {
+  readonly targetAccountId?: string;
+  readonly actor?: UserId;
+  /** ISO-8601; entries at or after this instant. */
+  readonly since?: string;
+}
+
 export interface PlatformAuditLogPort {
   /** Append one entry. No update/delete/replace member exists on this interface. */
   append(entry: PlatformAuditEntry): Promise<void>;
+
+  /**
+   * Read the trail, newest first, bounded.
+   *
+   * The port previously exposed only `append`, so the console could write
+   * the audit log but never show it — which makes an audit log decorative.
+   * The implementation had read methods; they just weren't reachable
+   * through the interface the application layer depends on.
+   *
+   * `limit` is required, not defaulted. This table only ever grows, and an
+   * unbounded read of it is a slow-motion outage on the one screen an
+   * incident response needs to work.
+   */
+  list(filter: PlatformAuditFilter, limit: number): Promise<readonly PlatformAuditEntry[]>;
 }

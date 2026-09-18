@@ -64,6 +64,11 @@ import { seedConversations } from "./seed/conversations";
 import { seedBroadcasts } from "./seed/broadcasts";
 import { seedTeam } from "./seed/team";
 import { seedUsers } from "./seed/users";
+import {
+  seedComplianceCaseDemo,
+  seedPlatformCredentials,
+  seedPlatformRoleGrants,
+} from "./seed/platform";
 import type { Seeder } from "./seed/types";
 import { getCurrentAuth } from "./session";
 
@@ -140,6 +145,25 @@ async function build(): Promise<BaseServices> {
 
   const credentialsRepository = new SqlCredentialsRepository(database);
   await seedUsers({ credentialsRepository, tenant, ownerUserId: ownerId, now });
+
+  // Platform staff are seeded AFTER the tenant seeders, and separately from
+  // them, because a platform principal is not a tenant member — it is an
+  // orthogonal axis (SUPER_ADMIN_CONSOLE.md §2). Without this the console
+  // is unreachable in dev: no user anywhere holds a platform-role grant, so
+  // every platform route correctly refuses every caller and the screens can
+  // never be exercised.
+  const platformGrants = await seedPlatformRoleGrants({
+    repositories,
+    tenant,
+    ownerUserId: ownerId,
+    now,
+    database,
+  });
+  await seedComplianceCaseDemo(
+    { repositories, tenant, ownerUserId: ownerId, now, database },
+    platformGrants,
+  );
+  await seedPlatformCredentials({ credentialsRepository, tenant, now, grants: platformGrants });
 
   const authProvider = new JwtAuthProvider(
     { secret: AUTH_SECRET, tenantId: accountId, issuer: AUTH_ISSUER, audience: AUTH_AUDIENCE },
