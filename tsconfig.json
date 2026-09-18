@@ -30,5 +30,16 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "workers"]
+  "exclude": [
+    "node_modules",
+    "workers",
+    // app-v2 is a SEPARATE monorepo with its own tsconfig and its own path
+    // aliases (@nexara/*, @modules/*, @packages/*). This file's include is
+    // "**/*.ts", which swallowed it whole — 2014 "cannot find module"
+    // errors, because those aliases mean nothing here. That broke the root
+    // typecheck and `next build` for every branch carrying app-v2, which is
+    // how it showed up as a failing deploy rather than a failing test.
+    // app-v2 typechecks itself: `cd app-v2 && npx tsc --noEmit`.
+    "app-v2"
+  ]
 }
