@@ -174,11 +174,12 @@ describe("buildQueryString", () => {
     expect(qs).toBe("?page=1");
   });
 
-  it("omits an explicit `false`, never encoding it — z.coerce.boolean() would read the STRING 'false' as true", () => {
-    const withFalse = buildQueryString({ unreadOnly: false, page: 1 });
-    const withoutField = buildQueryString({ page: 1 });
-    expect(withFalse).toBe(withoutField);
-    expect(withFalse).not.toContain("unreadOnly");
+  it("encodes an explicit `false` as \"false\" — the contracts side parses it back to false", () => {
+    // Only safe because query flags use `booleanQueryFlagSchema`, not
+    // `z.coerce.boolean()`, which would read "false" as true. If that ever
+    // regresses, the contract's own test fails first and this one documents
+    // why the client stopped omitting `false`.
+    expect(buildQueryString({ unreadOnly: false, page: 1 })).toBe("?unreadOnly=false&page=1");
   });
 
   it("encodes an explicit `true`", () => {

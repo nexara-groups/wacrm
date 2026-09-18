@@ -32,6 +32,22 @@ export const broadcastSchema = z.object({
   totalRecipients: z.number().int().min(0),
   sentCount: z.number().int().min(0),
   failedCount: z.number().int().min(0),
+  /**
+   * Pause is an EXTRA field, not a `BroadcastStatus` value: a paused run
+   * keeps `status: "sending"` and simply carries a `pausedAt`. Without
+   * these on the wire a paused broadcast is indistinguishable from a
+   * running one, and the pause/resume controls have nothing to read.
+   */
+  pausedAt: isoDateTimeSchema.nullable(),
+  pauseReason: z.string().min(1).nullable(),
+  /**
+   * Contacts excluded at AUDIENCE-BUILD time — distinct from `failedCount`,
+   * which counts send-time failures. The two answer different operator
+   * questions ("who did we decline to message" vs "who did we try and
+   * fail"), so collapsing them would destroy the §4b guarantee that the
+   * preview count equals what was actually enqueued.
+   */
+  skippedCount: z.number().int().min(0),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
 });

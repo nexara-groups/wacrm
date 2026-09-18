@@ -13,6 +13,7 @@ import {
 } from "./common/ids";
 import { apiResult } from "./common/response";
 import { paginatedResponseSchema, paginationQuerySchema } from "./common/pagination";
+import { booleanQueryFlagSchema } from "./common/query-flag";
 import { messageSchema } from "./messages";
 
 // ---------------------------------------------------------------------------
@@ -37,8 +38,9 @@ export type Conversation = z.infer<typeof conversationSchema>;
 
 export const listConversationsQuerySchema = paginationQuerySchema.extend({
   assignedUserId: userIdSchema.optional(),
-  /** `true` = only conversations with `unreadCount > 0`; `false`/omitted = all. */
-  unreadOnly: z.coerce.boolean().optional(),
+  /** `true` = only conversations with `unreadCount > 0`; `false`/omitted = all.
+   *  See `booleanQueryFlagSchema` for why this is not `z.coerce.boolean()`. */
+  unreadOnly: booleanQueryFlagSchema.optional(),
   search: z.string().min(1).max(200).optional(),
 });
 export type ListConversationsQuery = z.infer<typeof listConversationsQuerySchema>;

@@ -23,10 +23,9 @@ describe("conversations resource", () => {
 
     await conversations.list({ unreadOnly: false, page: 1, pageSize: 20 });
     const falseUrl = new URL(fetchFn.mock.calls[1]?.[0] as string);
-    // Deliberate: z.coerce.boolean() on the server would read the STRING
-    // "false" as `Boolean("false") === true`. Sending it would silently
-    // invert the caller's intent, so the client omits it instead.
-    expect(falseUrl.searchParams.has("unreadOnly")).toBe(false);
+    // `booleanQueryFlagSchema` on the server parses the string "false"
+    // back to `false`, so the client sends it rather than dropping it.
+    expect(falseUrl.searchParams.get("unreadOnly")).toBe("false");
   });
 
   it("sync() posts the cursor/limit request body and parses changes + nextCursor", async () => {

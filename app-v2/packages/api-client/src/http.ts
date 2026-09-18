@@ -21,15 +21,17 @@ export interface ApiClientContext {
 }
 
 /**
- * A query-string-safe primitive value. Sending an explicit `false` for a
- * `z.coerce.boolean()` query field (as `listConversationsQuerySchema.
- * unreadOnly` is) is a trap: zod v4's `z.coerce.boolean()` coerces via
- * `Boolean(value)`, and `Boolean("false")` is `true` — a query string quite
- * literally cannot express "false" for a coerced-boolean field, only
- * "absent". `buildQueryString` below treats `false` the same as
- * `undefined`/`null` (omits the key) specifically so a caller can never
- * construct a query string that means the opposite of what it says. See
- * this package's SubagentHandback report for the full note.
+ * A query-string-safe primitive value.
+ *
+ * `false` serialises as the string `"false"` and means what it says. That
+ * is only true because the contracts side stopped using
+ * `z.coerce.boolean()` for query flags: zod's coercion is `Boolean(value)`,
+ * and `Boolean("false")` is `true`, so a coerced-boolean field could
+ * express "true" and "absent" but never "false" — and got the one
+ * remaining case exactly backwards. This client used to omit `false`
+ * entirely to stay out of that trap. `booleanQueryFlagSchema`
+ * (`@packages/contracts`) fixed it at the source, so the workaround is
+ * gone and an explicit `false` now survives the round trip.
  */
 export type QueryValue = string | number | boolean | undefined | null;
 export type QueryParams = Record<string, QueryValue | readonly QueryValue[]>;
@@ -52,7 +54,6 @@ export function buildQueryString(params?: object): string {
     const values = Array.isArray(raw) ? raw : [raw];
     for (const value of values) {
       if (value === undefined || value === null) continue;
-      if (value === false) continue; // see QueryValue's doc comment above
       if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") continue;
       search.append(key, String(value));
     }
