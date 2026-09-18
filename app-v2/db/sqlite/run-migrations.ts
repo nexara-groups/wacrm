@@ -7,11 +7,17 @@
  * that has never been executed is a guess.
  */
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SqlJsDatabaseProvider } from "./sqljs-database-provider";
 
-const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/d1", import.meta.url));
+// NOT `new URL("../migrations/d1", import.meta.url)`. Bundlers (Turbopack,
+// webpack) special-case that exact syntax as a static asset reference and try
+// to resolve the target at build time — which fails here, because the target
+// is a directory of .sql files with no entry point. It broke `next build` for
+// every route importing this module. Composing the path from `dirname` is
+// equivalent at runtime and is not pattern-matched by the bundler.
+const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../migrations/d1");
 
 export interface AppliedMigration {
   readonly file: string;
