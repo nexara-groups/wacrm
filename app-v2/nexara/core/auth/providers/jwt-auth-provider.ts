@@ -1,4 +1,5 @@
 import { hashPassword, verifyPassword } from "@modules/identity/domain/token-hashing";
+import { checkPassword } from "@modules/identity/domain/password-policy";
 import { SignJWT, jwtVerify, type JWTPayload } from "jose";
 import { AppError } from "../../../shared/errors";
 import { createTenantContext } from "../../context";
@@ -71,8 +72,36 @@ export const WORKERS_FREE_TIER_ITERATIONS = 40_000;
 const DUMMY_PASSWORD_HASH =
   "pbkdf2-sha256$40000$AAAAAAAAAAAAAAAAAAAAAA$" +
   "QkFTRUxJTkVfVElNSU5HX09OTFlfTk9UX0FfUkVBTF9QQVNTV09SRA";
-const MEMBER_SESSION_SECONDS = 60 * 60 * 24 * 7;
-const PRIVILEGED_SESSION_SECONDS = 60 * 60 * 24;
+/**
+ * Three hours, down from seven days.
+ *
+ * Shorter is stricter: a stolen or forgotten-on-a-shared-machine session is
+ * useful for hours rather than a week. The cost is that people sign in more
+ * often, which is the trade the product owner chose.
+ *
+ * Note what this does NOT do: it is not a substitute for rate-limiting the
+ * login endpoint. Session length governs how often LEGITIMATE users
+ * re-authenticate; an attacker guessing passwords never holds a session at
+ * all and is unaffected by its lifetime. With the iteration count reduced for
+ * the Workers free tier, throttling `/api/auth/login` still matters — and it
+ * belongs at the Cloudflare edge, where it costs no Worker CPU, not in here.
+ */
+const MEMBER_SESSION_SECONDS = 60 * 60 * 3;
+/**
+ * One hour — SHORTER than a member session, not longer.
+ *
+ * `issueSession` gives this lifetime to every non-`member` role: owner,
+ * admin, manager. Those are the accounts that can remove people, change seat
+ * limits and read the whole tenant, so a stolen session costs the most there
+ * and should last the least.
+ *
+ * It read 24 hours, which was already 8x the member session once that
+ * dropped to three hours — the accounts with the most reach holding a
+ * session the longest, which is exactly backwards. The original pairing
+ * (7 days member / 24 hours privileged) had the right ordering and shortening
+ * only one side inverted it.
+ */
+const PRIVILEGED_SESSION_SECONDS = 60 * 60;
 
 function normalizedEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -89,6 +118,20 @@ function randomToken(): string {
 }
 
 /** D1-compatible, self-hosted email/password authentication. */
+/**
+ * Applies the password policy at every point a password is SET, turning a
+ * rejection into the `AppError` the API layer already knows how to render.
+ *
+ * Deliberately NOT called from `login`: an existing password that predates a
+ * policy change must keep working, and enforcing the rule there would lock
+ * people out over a rule they never had the chance to satisfy — while also
+ * publishing the policy to anyone who probes it.
+ */
+function assertPasswordAcceptable(password: string): void {
+  const check = checkPassword(password);
+  if (!check.ok) throw AppError.validation(check.laymanMessage);
+}
+
 export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
   readonly name = "jwt";
   private readonly secretKey: Uint8Array;
@@ -119,6 +162,7 @@ export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
 
   async register(input: RegistrationCredentials): Promise<AccountRegistration> {
     const email = normalizedEmail(input.email);
+    assertPasswordAcceptable(input.password);
     const passwordHash = await hashPassword(input.password, this.config.passwordIterations ?? WORKERS_FREE_TIER_ITERATIONS);
     const existing = await this.credentials.findByEmail(this.tenant(), email);
     if (existing) return { userId: existing.userId, email: existing.email, created: false };
@@ -146,6 +190,10 @@ export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
   }
 
   async resetPassword(token: string, newPassword: string): Promise<boolean> {
+    // Checked BEFORE the token is looked up, so a weak password is refused
+    // identically whether or not the token was valid — otherwise the
+    // difference in responses tells an attacker they hold a live token.
+    assertPasswordAcceptable(newPassword);
     const tokenHash = await sha256Hex(token);
     const owner = await this.credentials.findUsablePasswordReset(this.tenant(), tokenHash);
     if (!owner) return false;
