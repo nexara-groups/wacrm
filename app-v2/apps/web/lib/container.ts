@@ -63,6 +63,7 @@ import { seedContacts } from "./seed/contacts";
 import { seedConversations } from "./seed/conversations";
 import { seedBroadcasts } from "./seed/broadcasts";
 import { seedTeam } from "./seed/team";
+import { seedWhatsApp } from "./seed/whatsapp";
 import { seedUsers } from "./seed/users";
 import {
   seedComplianceCaseDemo,
@@ -73,7 +74,7 @@ import type { Seeder } from "./seed/types";
 import { getCurrentAuth } from "./session";
 
 /** Order matters: later seeders may reference rows earlier ones created. */
-const SEEDERS: readonly Seeder[] = [seedContacts, seedTeam, seedConversations, seedBroadcasts];
+const SEEDERS: readonly Seeder[] = [seedContacts, seedWhatsApp, seedTeam, seedConversations, seedBroadcasts];
 
 const AUTH_ISSUER = "wacrm-web";
 const AUTH_AUDIENCE = "wacrm-web-clients";

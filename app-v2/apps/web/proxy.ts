@@ -28,7 +28,21 @@ function isPublicApiPath(pathname: string): boolean {
   // Every /api/auth/* route handles its own authenticated/unauthenticated
   // cases (login IS the credential-entry point; session/logout must both
   // answer gracefully with no cookie at all).
-  return pathname.startsWith("/api/auth/");
+  if (pathname.startsWith("/api/auth/")) return true;
+
+  // Meta's webhook caller has no session cookie and never will, so without
+  // this exemption every inbound WhatsApp message is answered 401 and the
+  // inbox stays permanently empty.
+  //
+  // This is NOT an unauthenticated route — it is a DIFFERENTLY authenticated
+  // one. `app/api/webhooks/whatsapp/route.ts` verifies Meta's HMAC-SHA256
+  // signature over the raw request bytes, in constant time, and refuses to
+  // run at all when the app secret is unset. Cookie-based gating is simply
+  // the wrong check for a caller that authenticates by signing its payload.
+  //
+  // Kept to this one prefix deliberately: it is the only place in the app
+  // where the session check is skipped for a reason other than logging in.
+  return pathname.startsWith("/api/webhooks/");
 }
 
 export function proxy(request: NextRequest): NextResponse {
