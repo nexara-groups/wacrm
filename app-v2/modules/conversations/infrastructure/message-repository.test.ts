@@ -261,3 +261,113 @@ describe("SqlMessageRepository", () => {
     expect(counting.totalRowsReturned).toBeLessThan(60);
   });
 });
+
+describe("SqlMessageRepository — retention sweep", () => {
+  /** Inserts a message with an explicit created_at, which `insert` does not expose. */
+  async function messageAt(
+    tenant: TenantContext,
+    conversationId: ConversationId,
+    id: string,
+    createdAt: string,
+    replyTo: string | null = null,
+  ): Promise<void> {
+    await db.query(
+      `insert into messages
+         (id, account_id, conversation_id, contact_id, wamid, direction, type, body,
+          template_id, media_ref, status, error_code, reply_to, sent_at, delivered_at,
+          read_at, created_at, updated_at)
+       values ($1, $2, $3, $4, null, 'inbound', 'text', 'body', null, null, 'delivered',
+               null, $5, null, null, null, $6, $6)`,
+      [id, tenant.tenantId, conversationId, "c-1", replyTo, createdAt],
+    );
+  }
+
+  it("deletes a message that a SURVIVING message replies to — the case D1's foreign key rejects", async () => {
+    // THE TEST THIS FEATURE EXISTS FOR. `messages.reply_to` self-references
+    // `messages(id)`. Deleting an old message that a recent one replies to is
+    // a foreign-key violation, and D1 enforces foreign keys. Without nulling
+    // the survivor's `reply_to` in the SAME batch, the delete is rejected and
+    // retention silently never runs.
+    //
+    // This only fails here because the sql.js harness sets
+    // `PRAGMA foreign_keys = ON` to match D1. With SQLite's default (OFF) the
+    // broken version passes and leaves a dangling pointer instead.
+    await messageAt(A, convA, "old-quoted", "2020-01-01T00:00:00.000Z");
+    await messageAt(A, convA, "recent-reply", "2026-09-19T00:00:00.000Z", "old-quoted");
+
+    const result = await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 100);
+
+    expect(result.deleted).toBe(1);
+    const survivors = await db.query<{ id: string; reply_to: string | null }>(
+      `select id, reply_to from messages where account_id = $1`,
+      [A.tenantId],
+    );
+    expect(survivors.rows.map((r) => r.id)).toEqual(["recent-reply"]);
+    // The survivor is kept, with its now-meaningless pointer cleared rather
+    // than left dangling.
+    expect(survivors.rows[0]?.reply_to).toBeNull();
+  });
+
+  it("deletes only messages older than the cutoff, oldest first", async () => {
+    await messageAt(A, convA, "ancient", "2020-01-01T00:00:00.000Z");
+    await messageAt(A, convA, "expired", "2026-07-01T00:00:00.000Z");
+    await messageAt(A, convA, "kept", "2026-09-01T00:00:00.000Z");
+
+    const result = await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 100);
+
+    expect(result).toEqual({ deleted: 2, more: false });
+    const rest = await db.query<{ id: string }>(
+      `select id from messages where account_id = $1`,
+      [A.tenantId],
+    );
+    expect(rest.rows.map((r) => r.id)).toEqual(["kept"]);
+  });
+
+  it("stops at maxDeletes and reports that more remain", async () => {
+    for (let i = 0; i < 5; i++) {
+      await messageAt(A, convA, `old-${i}`, `2020-01-0${i + 1}T00:00:00.000Z`);
+    }
+    const first = await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 2);
+    expect(first).toEqual({ deleted: 2, more: true });
+
+    const second = await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 2);
+    expect(second).toEqual({ deleted: 2, more: true });
+
+    const third = await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 2);
+    expect(third).toEqual({ deleted: 1, more: false });
+  });
+
+  it("never touches another tenant's messages", async () => {
+    await messageAt(A, convA, "a-old", "2020-01-01T00:00:00.000Z");
+    await messageAt(B, convB, "b-old", "2020-01-01T00:00:00.000Z");
+
+    await messages.sweepExpiredMessages(A, "2026-08-01T00:00:00.000Z", 100);
+
+    const bRows = await db.query<{ id: string }>(
+      `select id from messages where account_id = $1`,
+      [B.tenantId],
+    );
+    expect(bRows.rows.map((r) => r.id)).toEqual(["b-old"]);
+  });
+
+  it("resolves the retention window, preferring an account override", async () => {
+    // The other tests in this file never create an `accounts` row — they only
+    // need `messages` and `conversations`. Retention config lives on
+    // `accounts`, so this one does.
+    await db.query(
+      `insert into accounts (id, name, owner_user_id, created_at, updated_at)
+       values ($1, 'Tenant A', 'owner-a', 't0', 't0')`,
+      [A.tenantId],
+    );
+
+    const base = await messages.getRetentionConfig(A);
+    expect(base).toEqual({ accountRetentionDaysOverride: null, platformDefaultRetentionDays: 60 });
+
+    await db.query(`update accounts set message_retention_days_override = $2 where id = $1`, [
+      A.tenantId,
+      180,
+    ]);
+    const overridden = await messages.getRetentionConfig(A);
+    expect(overridden.accountRetentionDaysOverride).toBe(180);
+  });
+});

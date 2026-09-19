@@ -151,7 +151,50 @@ export interface ThreadSearchPage {
   readonly total: number;
 }
 
+/** What one retention sweep did, and whether more remains. */
+export interface RetentionSweepResult {
+  /** Messages deleted. Never more than the plan's `maxDeletes`. */
+  readonly deleted: number;
+  /**
+   * `true` when the sweep hit its ceiling and expired messages remain. The
+   * caller runs it again — deleting fewer rows than exist is normal operation
+   * here, not partial failure. See `domain/retention.ts` for why the ceiling
+   * exists (a delete is a metered write on D1, and the first sweep of an
+   * untrimmed account would otherwise be its entire history in one statement).
+   */
+  readonly more: boolean;
+}
+
 export interface MessageRepository {
+  /**
+   * Reads the tenant's resolved retention window, in days:
+   * `accounts.message_retention_days_override ?? platform_settings
+   * .default_message_retention_days`. Read fresh — changing the platform
+   * default must move inheriting accounts immediately, the same rule seat
+   * limits follow.
+   */
+  getRetentionConfig(tenant: TenantContext): Promise<{
+    readonly accountRetentionDaysOverride: number | null;
+    readonly platformDefaultRetentionDays: number;
+  }>;
+
+  /**
+   * Deletes messages older than `cutoff`, at most `maxDeletes` of them,
+   * oldest first.
+   *
+   * MUST null the `reply_to` of SURVIVING messages that point at rows being
+   * deleted, in the SAME `batch()` as the delete. `messages.reply_to`
+   * self-references `messages(id)`, D1 enforces foreign keys, and the sql.js
+   * harness now does too (`PRAGMA foreign_keys = ON`) — so a delete that
+   * orphans a reply is rejected outright and takes the whole sweep with it.
+   * Getting this wrong does not corrupt data; it means retention silently
+   * never runs.
+   */
+  sweepExpiredMessages(
+    tenant: TenantContext,
+    cutoff: string,
+    maxDeletes: number,
+  ): Promise<RetentionSweepResult>;
   /**
    * Inserts a new message. Idempotent on `(account_id, wamid)`: if
    * `input.waMessageId` is non-null and a row with that `wamid` already

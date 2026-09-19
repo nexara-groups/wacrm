@@ -25,15 +25,15 @@ fails without the code — not "the report said so".
 | WhatsApp outbound | text send only |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
-| Retention | 60-day policy + migration. **The SQL sweep is NOT implemented.** |
+| Retention | 60-day policy, migration, and the SQL sweep. No scheduler calls it yet. |
 
 ## Next, in order
 
-1. **Retention sweep** — the SQL that actually deletes. Must null survivors'
-   `reply_to` in the same `batch()` as the delete, or D1's foreign key rejects
-   the whole statement. `messages.reply_to` self-references; the harness now
-   sets `PRAGMA foreign_keys = ON` to match D1, so a wrong implementation fails
-   in tests rather than in production.
+1. **A scheduler for the retention sweep.** `sweepExpiredMessages` exists,
+   is tested, and nothing calls it — so nothing is deleted yet. Needs a Workers
+   Cron Trigger that walks tenants and calls it until `more` is false. Note the
+   free tier's write metering: the sweep's ceiling is 1000 deletes per call for
+   that reason, so a backlog drains over several runs by design.
 2. **Email delivery** — nothing sends mail. Invitations issue a real token that
    cannot reach the invitee, and signup marks the owner verified because
    refusing unverified logins would otherwise lock them out of the account they

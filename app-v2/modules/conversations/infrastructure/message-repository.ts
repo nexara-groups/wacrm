@@ -388,4 +388,72 @@ export class SqlMessageRepository implements MessageRepository {
       createdAt: input.now,
     } as unknown as MessageAction;
   }
+
+  async getRetentionConfig(tenant: TenantContext): Promise<{
+    readonly accountRetentionDaysOverride: number | null;
+    readonly platformDefaultRetentionDays: number;
+  }> {
+    const { rows } = await this.db.query<Row>(
+      `select a.message_retention_days_override as override,
+              (select default_message_retention_days from platform_settings limit 1) as platform_default
+         from accounts a where a.id = $1`,
+      [tenant.tenantId],
+    );
+    const row = rows[0];
+    const override = row?.override;
+    const platformDefault = row?.platform_default;
+    return {
+      accountRetentionDaysOverride:
+        override === null || override === undefined ? null : Number(override),
+      // A missing platform row would otherwise resolve to NaN and then, via
+      // the domain's floor, to 1 day — silently the most destructive possible
+      // policy. 60 is the migration's own default.
+      platformDefaultRetentionDays:
+        platformDefault === null || platformDefault === undefined ? 60 : Number(platformDefault),
+    };
+  }
+
+  async sweepExpiredMessages(
+    tenant: TenantContext,
+    cutoff: string,
+    maxDeletes: number,
+  ): Promise<{ readonly deleted: number; readonly more: boolean }> {
+    // Read one MORE than the ceiling. The extra row is never deleted; its
+    // presence is how we know expired messages remain without running a
+    // second COUNT over the same range, which on a tier that meters rows read
+    // would double the cost of finding out.
+    const { rows } = await this.db.query<Row>(
+      `select id from messages
+        where account_id = $1 and created_at < $2
+        order by created_at asc
+        limit $3`,
+      [tenant.tenantId, cutoff, maxDeletes + 1],
+    );
+    if (rows.length === 0) return { deleted: 0, more: false };
+
+    const more = rows.length > maxDeletes;
+    const doomed = rows.slice(0, maxDeletes).map((r) => text(r.id));
+    const placeholders = doomed.map((_, i) => `$${i + 2}`).join(", ");
+
+    await this.db.batch([
+      {
+        // FIRST, and in the same batch: break the self-reference. A surviving
+        // message whose `reply_to` points at a row about to be deleted makes
+        // the delete a foreign-key violation, and D1 enforces foreign keys —
+        // so without this the whole sweep is rejected and retention silently
+        // never runs. Verified: the same delete succeeds with enforcement off
+        // and fails with it on, which is why the harness now matches D1.
+        sql: `update messages set reply_to = null
+               where account_id = $1 and reply_to in (${placeholders})`,
+        params: [tenant.tenantId, ...doomed],
+      },
+      {
+        sql: `delete from messages where account_id = $1 and id in (${placeholders})`,
+        params: [tenant.tenantId, ...doomed],
+      },
+    ]);
+
+    return { deleted: doomed.length, more };
+  }
+
 }
