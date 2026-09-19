@@ -394,7 +394,14 @@ export class SqlMessageRepository implements MessageRepository {
     readonly platformDefaultRetentionDays: number;
   }> {
     const { rows } = await this.db.query<Row>(
-      `select a.message_retention_days_override as override,
+      `-- tenant-scope-exempt: reads the tenant's OWN row from accounts, which
+       -- IS the tenant root. Its id column IS the tenant id, so "where
+       -- a.id = $1" already IS the tenant predicate. Same case as
+       -- SqlSeatRepository's reads of this table.
+       -- (No backticks in this comment: the guard matches backtick-delimited
+       -- blocks, so one here would split the block and orphan this marker
+       -- from the SQL it exempts.)
+       select a.message_retention_days_override as override,
               (select default_message_retention_days from platform_settings limit 1) as platform_default
          from accounts a where a.id = $1`,
       [tenant.tenantId],

@@ -272,7 +272,9 @@ describe("SqlMessageRepository — retention sweep", () => {
     replyTo: string | null = null,
   ): Promise<void> {
     await db.query(
-      `insert into messages
+      `-- tenant-scope-exempt: test setup writing a row FOR a named tenant;
+       -- account_id is supplied as a column value, which is the scoping.
+       insert into messages
          (id, account_id, conversation_id, contact_id, wamid, direction, type, body,
           template_id, media_ref, status, error_code, reply_to, sent_at, delivered_at,
           read_at, created_at, updated_at)
@@ -355,7 +357,9 @@ describe("SqlMessageRepository — retention sweep", () => {
     // need `messages` and `conversations`. Retention config lives on
     // `accounts`, so this one does.
     await db.query(
-      `insert into accounts (id, name, owner_user_id, created_at, updated_at)
+      `-- tenant-scope-exempt: creates the tenant root row itself; accounts.id
+       -- IS the tenant id.
+       insert into accounts (id, name, owner_user_id, created_at, updated_at)
        values ($1, 'Tenant A', 'owner-a', 't0', 't0')`,
       [A.tenantId],
     );
@@ -363,7 +367,11 @@ describe("SqlMessageRepository — retention sweep", () => {
     const base = await messages.getRetentionConfig(A);
     expect(base).toEqual({ accountRetentionDaysOverride: null, platformDefaultRetentionDays: 60 });
 
-    await db.query(`update accounts set message_retention_days_override = $2 where id = $1`, [
+    await db.query(
+      `-- tenant-scope-exempt: updates the tenant's own accounts row; its id
+       -- column IS the tenant id.
+       update accounts set message_retention_days_override = $2 where id = $1`,
+      [
       A.tenantId,
       180,
     ]);
