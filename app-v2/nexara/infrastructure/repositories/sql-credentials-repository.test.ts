@@ -56,16 +56,46 @@ describe("SqlCredentialsRepository against the real migrated schema", () => {
     await db.dispose();
   });
 
-  it("the same email may exist in two different tenants", async () => {
+  it("an email identifies exactly ONE credential system-wide — a second tenant cannot reuse it", async () => {
+    // This test previously asserted the OPPOSITE: that the same address could
+    // exist in two tenants. That property is what made multi-tenant login
+    // impossible — someone types an email and a password, and nothing in the
+    // request says which tenant they meant, so the old code hard-wired one
+    // tenant per deployment.
+    //
+    // Global uniqueness is not a new restriction. 0002_organizations.sql
+    // already locks "one account per user" with a UNIQUE index on
+    // memberships(user_id); this states the same rule where login can act on
+    // it. See 0013_global_email_uniqueness.sql.
     const { db, repo } = await freshRepo();
     await repo.create(TENANT, {
       userId: "u1", email: "shared@x.test", passwordHash: "h1", role: "owner", verifiedAt: null,
     } as never);
-    await repo.create(OTHER, {
-      userId: "u2", email: "shared@x.test", passwordHash: "h2", role: "owner", verifiedAt: null,
-    } as never);
+
+    await expect(
+      repo.create(OTHER, {
+        userId: "u2", email: "shared@x.test", passwordHash: "h2", role: "owner", verifiedAt: null,
+      } as never),
+    ).rejects.toThrow();
+
+    // The original credential is untouched by the failed attempt.
     expect((await repo.findByEmail(TENANT, "shared@x.test"))?.passwordHash).toBe("h1");
-    expect((await repo.findByEmail(OTHER, "shared@x.test"))?.passwordHash).toBe("h2");
+    await db.dispose();
+  });
+
+  it("findByEmailAnyTenant resolves the owning tenant, which is what login needs", async () => {
+    // Login's first problem is "who is this?", and the answer includes which
+    // tenant. Every other repository method takes the tenant as an input;
+    // this one produces it.
+    const { db, repo } = await freshRepo();
+    await repo.create(OTHER, {
+      userId: "u9", email: "finder@x.test", passwordHash: "h9", role: "admin", verifiedAt: null,
+    } as never);
+
+    const found = await repo.findByEmailAnyTenant("finder@x.test");
+    expect(found?.tenantId).toBe(OTHER.tenantId);
+    expect(found?.userId).toBe("u9");
+    expect(await repo.findByEmailAnyTenant("nobody@x.test")).toBeNull();
     await db.dispose();
   });
 

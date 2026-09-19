@@ -129,20 +129,41 @@ real deployment, absent in Node (`next dev`, `vitest run`). This is the
   simply never called here, not merely skipped by a flag), so there is no
   code path that can seed demo data into a real D1 database.
 
-### Single-tenant auth — a real, load-bearing constraint
+### Multi-tenant auth — resolved
 
-`JwtAuthProvider` (`nexara/core/auth/providers/jwt-auth-provider.ts`, out of
-scope to change here) is constructed with a fixed `tenantId`, and
-`getCurrentUser`'s credential lookup is scoped to *that* tenant, not to the
-tenant claim inside the token being verified. In other words: **one
-Workers deployment of this container currently serves exactly one tenant**,
-whichever `AUTH_TENANT_ID` names. This was already true in dev (the
-`accountId` the dev builder generates and hardcodes into the same
-provider), just invisible because dev regenerates and reseeds it every
-process start. A real multi-tenant deployment needs
-`JwtAuthProvider.getCurrentUser` to scope by the token's own `tenantId`
-claim instead of a container-wide constant — that is a change to
-`nexara/core/auth/**`, off limits here. Reported, not worked around.
+One Workers deployment serves EVERY tenant in its D1 database.
+
+Two things make that true:
+
+- **Login resolves the tenant from the credential.** A login request carries
+  an email and a password and nothing that names a tenant, so
+  `findByEmailAnyTenant` finds the one credential with that address and the
+  session is issued for the tenant on that row. Unambiguous because
+  `credentials.email` is globally unique
+  (`0013_global_email_uniqueness.sql`), which is the same rule
+  `0002_organizations.sql` already locked as "one account per user", stated
+  where login can act on it.
+- **Session verification scopes by the token's own tenant claim**, not by the
+  tenant the container was configured with. The claim is trustworthy because
+  the signature, issuer and audience have already been checked — an attacker
+  cannot choose it without the signing key.
+
+It previously worked the other way: `getCurrentUser` looked the user id up in
+the CONFIGURED tenant, so a token issued for one tenant resolved inside
+whichever tenant the deployment happened to name. Harmless while one
+deployment served one customer; a cross-tenant identity the moment that
+stopped being true.
+
+`AUTH_TENANT_ID` survives, with a much smaller job: the tenant that NEW
+credentials are created in, for registration, password reset and email
+verification — flows that carry no token to read a tenant from. It no longer
+has anything to do with whose sessions this deployment can verify.
+
+`nexara/core/auth/providers/jwt-auth-provider.test.ts` holds the isolation
+cases, including the one that matters: the same user id existing in two
+tenants, where a token for one must not resolve to the other. Both fail if
+session verification ever goes back to the configured tenant — verified by
+reverting the change and watching them break.
 
 ### D1 has no interactive transactions
 

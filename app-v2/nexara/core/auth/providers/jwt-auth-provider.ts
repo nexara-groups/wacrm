@@ -148,7 +148,11 @@ export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
   }
 
   async login(credentials: Credentials): Promise<Session> {
-    const record = await this.credentials.findByEmail(this.tenant(), normalizedEmail(credentials.email));
+    // Resolved across ALL tenants: a login request carries an email and a
+    // password and nothing that says which tenant is meant. The tenant comes
+    // from the credential that matches, never from configuration — that is
+    // what lets one deployment serve every tenant instead of one.
+    const record = await this.credentials.findByEmailAnyTenant(normalizedEmail(credentials.email));
     if (!record) {
       await verifyPassword(credentials.password, DUMMY_PASSWORD_HASH);
       throw AppError.unauthenticated("Invalid email or password");
@@ -235,7 +239,28 @@ export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
     try {
       const verified = await this.verifyToken(accessToken);
       if (!verified?.payload.sub) return null;
-      const record = await this.credentials.findByUserId(this.tenant(), verified.payload.sub);
+
+      // Scoped by the tenant claim INSIDE the verified token, never by
+      // `this.config.tenantId`. Using the configured tenant meant a token
+      // issued for one tenant was looked up in whichever tenant the
+      // deployment happened to name — harmless while one deployment served
+      // one tenant, and a cross-tenant lookup the moment that stopped being
+      // true. The claim is trustworthy precisely because `verifyToken` has
+      // already checked the signature, issuer and audience; an attacker
+      // cannot choose it without the signing key.
+      const claimedTenant = verified.payload.tenantId;
+      if (typeof claimedTenant !== "string" || claimedTenant.length === 0) return null;
+
+      const record = await this.credentials.findByUserId(
+        createTenantContext(claimedTenant),
+        verified.payload.sub,
+      );
+
+      // Belt and braces: the row must actually belong to the tenant the token
+      // claimed. `findByUserId` already filters by it, so this can only fire
+      // if that contract is ever broken — and a silent cross-tenant identity
+      // is not a failure worth discovering in production.
+      if (record && record.tenantId !== claimedTenant) return null;
       if (!record || record.sessionVersion !== verified.payload.sv) return null;
       return this.toAuthUser(record);
     } catch {
@@ -252,6 +277,15 @@ export class JwtAuthProvider implements AuthProvider, CredentialsAuthProvider {
     return this.permissions.can(user.role, permission);
   }
 
+  /**
+   * The tenant NEW credentials are created in — registration, password reset
+   * and verification flows, which have no token to read a tenant from.
+   *
+   * Deliberately not used by `login` or `getCurrentUser` any more: those
+   * resolve the tenant from the credential and from the verified token
+   * respectively. What remains is genuinely a default for creation, not an
+   * assumption about who is asking.
+   */
   private tenant() {
     return createTenantContext(this.config.tenantId);
   }

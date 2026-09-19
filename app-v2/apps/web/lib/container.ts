@@ -187,9 +187,12 @@ function requireWorkersEnv(name: string, why: string): string {
  * apply`, run once by a human against the real database, never by app code
  * on a cold start (see `docs/cloudflare-deploy.md`).
  *
- * `AUTH_TENANT_ID` is a NEW requirement this path introduces — see that
- * file's "single-tenant auth" note for why `JwtAuthProvider` needs a fixed
- * tenant id at construction time and cannot be seeded around it here.
+ * `AUTH_TENANT_ID` names the tenant that NEW credentials are created in —
+ * registration, password reset and email verification, none of which carry a
+ * token to read a tenant from. It is NOT the tenant this deployment serves:
+ * `login` resolves the tenant from the credential that matches the email, and
+ * `getCurrentUser` from the verified token's own claim, so one deployment
+ * serves every tenant in the database. See `jwt-auth-provider.test.ts`.
  */
 async function buildD1BaseServices(): Promise<BaseServices> {
   const { getCloudflareContext } = await import("@opennextjs/cloudflare");
@@ -206,10 +209,13 @@ async function buildD1BaseServices(): Promise<BaseServices> {
   const repositories = buildModuleRepositories(database);
   const credentialsRepository = new SqlCredentialsRepository(database);
 
+  // The tenant NEW credentials are created in. Sessions do not depend on it:
+  // login resolves the tenant from the credential, and session verification
+  // from the token's claim.
   const tenantId = requireWorkersEnv(
     "AUTH_TENANT_ID",
-    "This deployment cannot verify any session without knowing which tenant it serves — " +
-      "set it to the account id already provisioned in this D1 database.",
+    "Registration and password-reset flows need a tenant to create credentials in — " +
+      "set it to the account id provisioned in this D1 database.",
   );
 
   const authProvider = new JwtAuthProvider(

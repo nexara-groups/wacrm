@@ -14,6 +14,21 @@ export class SqlCredentialsRepository implements CredentialsRepository {
     return rows[0] ? toCredential(rows[0]) : null;
   }
 
+  async findByEmailAnyTenant(email: string): Promise<Credential | null> {
+    const { rows } = await this.db.query<CredentialRow>(
+      `-- tenant-scope-exempt: this is the query that DETERMINES the tenant.
+       -- A login request carries an email and a password and no tenant, so
+       -- scoping this by tenant would require knowing the answer already.
+       -- Bounded to one row by the global UNIQUE index on credentials(email)
+       -- (0013), so it cannot enumerate tenants; everything downstream scopes
+       -- by the tenant_id on the row it returns.
+       select user_id, tenant_id, email, password_hash, role, session_version, verified_at
+         from credentials where email = $1 limit 1`,
+      [email],
+    );
+    return rows[0] ? toCredential(rows[0]) : null;
+  }
+
   async findByUserId(tenant: TenantContext, userId: string): Promise<Credential | null> {
     const { rows } = await this.db.query<CredentialRow>(
       `select user_id, tenant_id, email, password_hash, role, session_version, verified_at from credentials where tenant_id = $1 and user_id = $2 limit 1`,

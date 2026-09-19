@@ -1,0 +1,33 @@
+-- 0013_global_email_uniqueness.sql (D1 / SQLite dialect)
+--
+-- Makes multi-tenant login possible by making an email address identify
+-- exactly one credential across the whole system.
+--
+-- THE PROBLEM. `credentials` had `UNIQUE (tenant_id, email)`, so the same
+-- address could exist in two tenants. That is fine for storage and fatal for
+-- login: someone types an email and a password, and nothing in the request
+-- says which tenant they meant. The old code sidestepped this by hard-wiring
+-- one tenant per deployment — one Worker, one customer — which is not a
+-- multi-tenant product.
+--
+-- WHY GLOBAL UNIQUENESS IS THE RIGHT ANSWER HERE, and not a subdomain or a
+-- tenant picker on the login form: the schema already locked "one account per
+-- user" in 0002_organizations.sql —
+--
+--     CREATE UNIQUE INDEX idx_memberships_one_per_user ON memberships(user_id);
+--
+-- If a user can only ever belong to one account, then an address identifying
+-- one credential is not a new restriction, it is the same rule stated where
+-- login can act on it. A tenant picker would ask people to choose between
+-- options the data model says they never have.
+--
+-- The composite UNIQUE (tenant_id, email) stays. It is redundant under this
+-- index rather than wrong, and dropping a constraint in SQLite means
+-- rebuilding the table — a real risk for no gain.
+--
+-- IF THE ONE-ACCOUNT-PER-USER RULE IS EVER RELAXED, this index has to go with
+-- it, and login then needs another way to resolve the tenant. The two
+-- decisions are joined; whoever revisits one must revisit the other.
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_email_global
+  ON credentials(email);
