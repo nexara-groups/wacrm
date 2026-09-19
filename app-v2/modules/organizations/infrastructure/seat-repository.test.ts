@@ -4,6 +4,7 @@ import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provide
 import { runMigrations } from "../../../db/sqlite/run-migrations";
 import { SqlSeatRepository } from "./seat-repository";
 import { countSeats } from "../domain/seat-usage";
+import { hashToken } from "../../identity/domain/token-hashing";
 import { resolveSeatLimit } from "../domain/seat-limit";
 
 const A: TenantContext = { tenantId: "acct-a" };
@@ -34,18 +35,23 @@ async function seedAccount(accountId: string): Promise<void> {
   );
 }
 
+/** Seeds a pending invitation and returns its RAW token — the only thing
+ *  `acceptInvitationIfSeatAvailable` accepts, so the hash stored here has to
+ *  be the real digest of it, not a made-up string. */
 async function seedPendingInvitation(
   accountId: string,
   id: string,
   opts: { expiresAt?: string; role?: string } = {},
-): Promise<void> {
+): Promise<string> {
+  const rawToken = `raw-token-${id}`;
   await db.query(
     `insert into account_invitations
        (id, account_id, token_hash, role, created_by_user_id, label, created_at, expires_at,
         accepted_at, accepted_by_user_id, revoked_at)
      values ($1, $2, $3, $4, null, $5, 't', $6, null, null, null)`,
-    [id, accountId, `hash-${id}`, opts.role ?? "member", `${id}@invite.test`, opts.expiresAt ?? "2099-01-01T00:00:00.000Z"],
+    [id, accountId, await hashToken(rawToken), opts.role ?? "member", `${id}@invite.test`, opts.expiresAt ?? "2099-01-01T00:00:00.000Z"],
   );
+  return rawToken;
 }
 
 beforeEach(async () => {
@@ -78,7 +84,7 @@ describe("SqlSeatRepository", () => {
       expiresAt: new Date("2099-01-01T00:00:00.000Z"),
     });
     expect(invite).not.toBeNull();
-    expect(invite?.status).toBe("pending");
+    expect(invite?.invitation.status).toBe("pending");
 
     const invitations = await repo.listInvitations(A);
     expect(countSeats(await repo.listMembers(A), invitations, NOW)).toBe(2); // owner + 1 pending
@@ -149,7 +155,7 @@ describe("SqlSeatRepository", () => {
     expect(invite).not.toBeNull();
     const before = countSeats(await repo.listMembers(A), await repo.listInvitations(A), NOW);
 
-    const member = await repo.acceptInvitationIfSeatAvailable(A, invite!.id, NOW);
+    const member = await repo.acceptInvitationIfSeatAvailable(A, invite!.token, NOW);
     expect(member).not.toBeNull();
     expect(member?.role).toBe("admin");
     expect(member?.status).toBe("active");
@@ -159,15 +165,57 @@ describe("SqlSeatRepository", () => {
 
     // The invitation is now accepted, not pending.
     const invitations = await repo.listInvitations(A);
-    expect(invitations.find((i) => i.id === invite!.id)?.status).toBe("accepted");
+    expect(invitations.find((i) => i.id === invite!.invitation.id)?.status).toBe("accepted");
+  });
+
+  it("an invitation ID is not a credential — accepting with it instead of the token fails", async () => {
+    // The property this pins: an id appears in listings, in URLs and in
+    // logs, while accepting an invitation creates a user with a role inside
+    // someone's account. Before the token path existed, `token_hash` held a
+    // value nobody was ever given and accept was keyed on the id, so the id
+    // WAS the credential. If accept ever regresses to an id lookup, this
+    // fails.
+    const invite = await repo.reserveSeatAndCreateInvitation(A, {
+      email: "byid@x.test",
+      role: "member",
+      invitedBy: "u-acct-a",
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    expect(invite).not.toBeNull();
+
+    expect(await repo.acceptInvitationIfSeatAvailable(A, invite!.invitation.id, NOW)).toBeNull();
+    // ...and the real token still works, so the refusal above is about the
+    // id specifically, not a broken invitation.
+    expect(await repo.acceptInvitationIfSeatAvailable(A, invite!.token, NOW)).not.toBeNull();
+  });
+
+  it("the raw token is returned once and never stored — only its digest is in the row", async () => {
+    const invite = await repo.reserveSeatAndCreateInvitation(A, {
+      email: "digest@x.test",
+      role: "member",
+      invitedBy: "u-acct-a",
+      expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+    });
+    const { rows } = await db.query<{ token_hash: string }>(
+      `select token_hash from account_invitations where account_id = $1 and id = $2`,
+      ["acct-a", invite!.invitation.id],
+    );
+    expect(rows[0]?.token_hash).toBe(await hashToken(invite!.token));
+    expect(rows[0]?.token_hash).not.toBe(invite!.token);
+
+    // No read path hands the token back: listInvitations returns
+    // SeatInvitation, which has no token field at all.
+    const listed = (await repo.listInvitations(A)).find((i) => i.id === invite!.invitation.id);
+    expect(listed).toBeDefined();
+    expect(Object.keys(listed!)).not.toContain("token");
   });
 
   it("re-accepting the same invitation a second time fails (already accepted)", async () => {
     const invite = await repo.reserveSeatAndCreateInvitation(A, {
       email: "new@x.test", role: "member", invitedBy: "u-acct-a", expiresAt: new Date("2099-01-01T00:00:00.000Z"),
     });
-    await repo.acceptInvitationIfSeatAvailable(A, invite!.id, NOW);
-    const second = await repo.acceptInvitationIfSeatAvailable(A, invite!.id, NOW);
+    await repo.acceptInvitationIfSeatAvailable(A, invite!.token, NOW);
+    const second = await repo.acceptInvitationIfSeatAvailable(A, invite!.token, NOW);
     expect(second).toBeNull();
   });
 
@@ -177,12 +225,12 @@ describe("SqlSeatRepository", () => {
     await repo.createMemberDirectly(A, { email: "second@x.test", role: "member" });
     expect(await repo.listMembers(A)).toHaveLength(2);
 
-    await seedPendingInvitation("acct-a", "inv-race-1");
-    await seedPendingInvitation("acct-a", "inv-race-2");
+    const raceToken1 = await seedPendingInvitation("acct-a", "inv-race-1");
+    const raceToken2 = await seedPendingInvitation("acct-a", "inv-race-2");
 
     const [r1, r2] = await Promise.all([
-      repo.acceptInvitationIfSeatAvailable(A, "inv-race-1", NOW),
-      repo.acceptInvitationIfSeatAvailable(A, "inv-race-2", NOW),
+      repo.acceptInvitationIfSeatAvailable(A, raceToken1, NOW),
+      repo.acceptInvitationIfSeatAvailable(A, raceToken2, NOW),
     ]);
 
     const successes = [r1, r2].filter((r) => r !== null);
@@ -301,17 +349,17 @@ describe("SqlSeatRepository", () => {
         email: "a@x.test", role: "member", invitedBy: "u-acct-a", expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       });
       // Tenant B presenting tenant A's invitation id must not succeed.
-      expect(await repo.acceptInvitationIfSeatAvailable(B, invite!.id, NOW)).toBeNull();
+      expect(await repo.acceptInvitationIfSeatAvailable(B, invite!.token, NOW)).toBeNull();
       // It is still acceptable under its real tenant afterwards.
-      expect(await repo.acceptInvitationIfSeatAvailable(A, invite!.id, NOW)).not.toBeNull();
+      expect(await repo.acceptInvitationIfSeatAvailable(A, invite!.token, NOW)).not.toBeNull();
     });
 
     it("markInvitationExpiredOrRevoked / removeMember / reactivateMemberIfSeatAvailable are no-ops across tenants", async () => {
       const invite = await repo.reserveSeatAndCreateInvitation(A, {
         email: "a@x.test", role: "member", invitedBy: "u-acct-a", expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       });
-      await repo.markInvitationExpiredOrRevoked(B, invite!.id, "revoked");
-      expect((await repo.listInvitations(A)).find((i) => i.id === invite!.id)?.status).toBe("pending");
+      await repo.markInvitationExpiredOrRevoked(B, invite!.invitation.id, "revoked");
+      expect((await repo.listInvitations(A)).find((i) => i.id === invite!.invitation.id)?.status).toBe("pending");
 
       const member = await repo.createMemberDirectly(A, { email: "m2@x.test", role: "member" });
       await repo.removeMember(B, member.id);

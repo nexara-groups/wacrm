@@ -92,13 +92,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const invitation = toFreshInvitationDTO(
       tenant.tenantId,
-      result.value,
+      result.value.invitation,
       body.email,
       body.role,
       ownerUserId,
       createdAt.toISOString(),
     );
-    return ok({ invitation }, { status: 201 });
+
+    // The raw token is returned exactly once, here, because only its hash is
+    // stored and there is no way to recover it afterwards. It belongs in the
+    // invite email; it is included in this response so the caller that just
+    // created the invitation can send that email. Nothing that LISTS
+    // invitations returns it — `toListedInvitationDTO` has no token field.
+    return ok({ invitation, token: result.value.token }, { status: 201 });
   } catch (error) {
     if (isZodError(error)) return validationError(error);
     return internalError(error);

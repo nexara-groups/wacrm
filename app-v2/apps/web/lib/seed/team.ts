@@ -60,7 +60,7 @@ export async function seedTeam(ctx: SeedContext): Promise<void> {
       "seedTeam: expected a free seat for the doomed invitation (owner + 1 member = 2/3) — seat accounting drifted",
     );
   }
-  await seats.markInvitationExpiredOrRevoked(tenant, doomed.id, "revoked");
+  await seats.markInvitationExpiredOrRevoked(tenant, doomed.invitation.id, "revoked");
 
   // The real pending invitation — brings usage to 3/3 (AT the platform
   // default cap), demonstrating the invited-not-yet-accepted case that

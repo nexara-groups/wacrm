@@ -96,12 +96,14 @@ import type { AtomicBatchDatabaseProvider, Row } from "@nexara/core/database";
 import type { TenantContext } from "@nexara/core/context";
 import { isRole, type Role } from "@nexara/core/rbac";
 import { AppError } from "@shared/errors";
+import { generateToken, hashToken } from "@modules/identity/domain/token-hashing";
 import { resolveSeatLimit } from "../domain/seat-limit";
 import { countSeats, type SeatInvitation, type SeatMember } from "../domain/seat-usage";
 import { computeOverSeatLimitStatus } from "../domain/over-seat-limit";
 import type {
   CreateInvitationInput,
   DirectUserCreationInput,
+  ReservedInvitation,
   SeatAuditEntry,
   SeatLimitConfig,
   SeatRepository,
@@ -260,14 +262,17 @@ export class SqlSeatRepository implements SeatRepository {
   async reserveSeatAndCreateInvitation(
     tenant: TenantContext,
     input: CreateInvitationInput,
-  ): Promise<SeatInvitation | null> {
+  ): Promise<ReservedInvitation | null> {
     if (input.role === "owner") {
       throw AppError.validation("cannot invite a new owner (account_invitations.role forbids it)");
     }
     const id = crypto.randomUUID();
-    // See file header, gap #4 — an internal-only placeholder; never a real
-    // secret, and nothing ever looks an invitation up by it.
-    const tokenPlaceholder = crypto.randomUUID();
+    // A real, high-entropy invitation secret. Only its digest is stored, and
+    // the raw value is returned exactly once, from here. `token_hash` used to
+    // receive a random UUID that was never handed to anyone and never looked
+    // up — so no invitation could actually be accepted by its recipient.
+    const rawToken = generateToken();
+    const tokenHash = await hashToken(rawToken);
     const createdAt = nowIso();
     const expiresAt = input.expiresAt.toISOString();
 
@@ -284,33 +289,43 @@ export class SqlSeatRepository implements SeatRepository {
                      and ai.expires_at > $7
                 )
               ) < ${resolvedSeatLimitSubquery("$2")}`,
-      [id, tenant.tenantId, tokenPlaceholder, input.role, input.invitedBy, input.email, createdAt, expiresAt],
+      [id, tenant.tenantId, tokenHash, input.role, input.invitedBy, input.email, createdAt, expiresAt],
     );
     if (rowCount !== 1) return null;
     return {
-      id,
-      status: "pending",
-      email: input.email,
-      role: input.role,
-      invitedBy: input.invitedBy,
-      createdAt: new Date(createdAt),
-      expiresAt: input.expiresAt,
+      invitation: {
+        id,
+        status: "pending",
+        email: input.email,
+        role: input.role,
+        invitedBy: input.invitedBy,
+        createdAt: new Date(createdAt),
+        expiresAt: input.expiresAt,
+      },
+      token: rawToken,
     };
   }
 
   async acceptInvitationIfSeatAvailable(
     tenant: TenantContext,
-    invitationId: string,
+    rawToken: string,
     now: Date,
   ): Promise<SeatMember | null> {
+    const tokenHash = await hashToken(rawToken);
     return this.withTenantLock(tenant, async () => {
       const nowValue = now.toISOString();
+      // Looked up by token hash, never by id — holding the emailed secret is
+      // the only way in. `hashToken` is deterministic (unsalted SHA-256 over
+      // a 256-bit random value), which is what makes this a lookup rather
+      // than a scan; see its docstring for why that is the right trade here.
       const existing = await this.db.query<Row>(
-        `select role, label from account_invitations where account_id = $1 and id = $2`,
-        [tenant.tenantId, invitationId],
+        `select id, role, label from account_invitations
+          where account_id = $1 and token_hash = $2`,
+        [tenant.tenantId, tokenHash],
       );
       const invitation = existing.rows[0];
       if (invitation === undefined) return null;
+      const invitationId = text(invitation.id);
       const role = toRole(invitation.role);
       const email = nullableText(invitation.label) ?? `unknown+${invitationId}@invalid`;
       const newUserId = crypto.randomUUID();

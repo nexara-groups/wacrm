@@ -30,6 +30,20 @@ export interface CreateInvitationInput {
   readonly expiresAt: Date;
 }
 
+/**
+ * A freshly reserved invitation plus its one-time raw token.
+ *
+ * Split from `SeatInvitation` deliberately: every READ of an invitation
+ * returns `SeatInvitation`, which has no token field, so there is no shape
+ * in which a stored token can be handed back. The raw value exists only in
+ * the return of the call that created it.
+ */
+export interface ReservedInvitation {
+  readonly invitation: SeatInvitation;
+  /** High-entropy, opaque. Only its `hashToken` digest is persisted. */
+  readonly token: string;
+}
+
 export interface DirectUserCreationInput {
   readonly email: string;
   readonly role: Role;
@@ -78,14 +92,27 @@ export interface SeatRepository {
    * invitation (reserving its seat) as one operation. Returns `null` if no
    * seat was available at the moment of the attempt (never throws for a
    * plain "no seats left" outcome).
+   *
+   * Returns the raw invitation token alongside the row, and this is the ONLY
+   * moment it exists in readable form — only its hash is stored. Hand it to
+   * the invitee (a link in an email); it cannot be recovered afterwards,
+   * which is the point.
    */
   reserveSeatAndCreateInvitation(
     tenant: TenantContext,
     input: CreateInvitationInput,
-  ): Promise<SeatInvitation | null>;
+  ): Promise<ReservedInvitation | null>;
 
   /**
-   * §3 "Accept invitation" — ATOMIC re-check-and-accept: verifies a seat is
+   * §3 "Accept invitation" — takes the RAW TOKEN, never an invitation id.
+   *
+   * An invitation id is an identifier, not a credential: it appears in
+   * listings, in URLs and in logs, and accepting an invitation creates a
+   * user with a role inside someone's account. Keying this on the token
+   * means holding the emailed secret is the only way to accept, and the
+   * secret is never stored in recoverable form.
+   *
+   * ATOMIC re-check-and-accept: verifies a seat is
    * still available (the cap may have been reduced, or another invite
    * accepted first) and, if so, converts the invitation into an active
    * member in the same operation. Returns `null` if no seat was available.
@@ -94,7 +121,7 @@ export interface SeatRepository {
    */
   acceptInvitationIfSeatAvailable(
     tenant: TenantContext,
-    invitationId: string,
+    rawToken: string,
     now: Date,
   ): Promise<SeatMember | null>;
 

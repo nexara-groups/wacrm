@@ -6,6 +6,7 @@ import { SeatService, SeatLimitExceeded } from "./seat-service";
 import type {
   CreateInvitationInput,
   DirectUserCreationInput,
+  ReservedInvitation,
   SeatAuditEntry,
   SeatLimitConfig,
   SeatRepository,
@@ -49,6 +50,19 @@ class FakeSeatRepository implements SeatRepository {
   private readonly stores = new Map<string, TenantStore>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private nextId = 1;
+  /** raw token -> invitation id, mirroring the real repository's token_hash lookup. */
+  private readonly tokens = new Map<string, string>();
+
+  /** Test helper: the raw token for a directly-seeded invitation id. Accept
+   *  is token-keyed now, so a test that seeds a row must also know its
+   *  token — exactly as a real invitee would. */
+  tokenFor(invitationId: string): string {
+    const existing = [...this.tokens.entries()].find(([, id]) => id === invitationId);
+    if (existing) return existing[0];
+    const token = `seeded-token-${invitationId}`;
+    this.tokens.set(token, invitationId);
+    return token;
+  }
 
   seed(tenantId: string, partial: Partial<TenantStore>): void {
     this.stores.set(tenantId, {
@@ -106,13 +120,14 @@ class FakeSeatRepository implements SeatRepository {
   async reserveSeatAndCreateInvitation(
     tenant: TenantContext,
     input: CreateInvitationInput,
-  ): Promise<SeatInvitation | null> {
+  ): Promise<ReservedInvitation | null> {
     return this.withLock(tenant, async () => {
       const store = this.store(tenant);
       const limit = resolveSeatLimit(store.config);
       const used = countSeats(store.members, store.invitations, NOW);
       await this.settle();
       if (used >= limit) return null;
+      const rawToken = `token-${this.nextId}`;
       const invitation: SeatInvitation = {
         id: `invite-${this.nextId++}`,
         status: "pending",
@@ -123,17 +138,22 @@ class FakeSeatRepository implements SeatRepository {
         expiresAt: input.expiresAt,
       };
       store.invitations.push(invitation);
-      return invitation;
+      this.tokens.set(rawToken, invitation.id);
+      return { invitation, token: rawToken };
     });
   }
 
   async acceptInvitationIfSeatAvailable(
     tenant: TenantContext,
-    invitationId: string,
+    rawToken: string,
     now: Date,
   ): Promise<SeatMember | null> {
     return this.withLock(tenant, async () => {
       const store = this.store(tenant);
+      // Mirrors the real repository: the token is the only way in, so an
+      // unknown one finds nothing rather than falling back to an id lookup.
+      const invitationId = this.tokens.get(rawToken);
+      if (invitationId === undefined) return null;
       const invitation = store.invitations.find((i) => i.id === invitationId);
       if (!invitation || invitation.status !== "pending") return null;
 
@@ -318,7 +338,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
       { actorUserId: "platform-1", reason: "customer onboarding escalation" },
     );
 
-    const result = await service.acceptInvitation(tenant("acct-1"), "invite-1");
+    const result = await service.acceptInvitation(tenant("acct-1"), repo.tokenFor("invite-1"));
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -334,7 +354,7 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
     });
     const service = makeService(repo);
 
-    const result = await service.acceptInvitation(tenant("acct-1"), "invite-1");
+    const result = await service.acceptInvitation(tenant("acct-1"), repo.tokenFor("invite-1"));
 
     expect(result.ok).toBe(true);
   });
@@ -361,8 +381,8 @@ describe("SeatService — SEAT_LIMITS.md §3 / §7", () => {
       const service = makeService(repo);
 
       const [resultA, resultB] = await Promise.all([
-        service.acceptInvitation(tenant("acct-1"), "invite-A"),
-        service.acceptInvitation(tenant("acct-1"), "invite-B"),
+        service.acceptInvitation(tenant("acct-1"), repo.tokenFor("invite-A")),
+        service.acceptInvitation(tenant("acct-1"), repo.tokenFor("invite-B")),
       ]);
 
       const outcomes = [resultA.ok, resultB.ok];

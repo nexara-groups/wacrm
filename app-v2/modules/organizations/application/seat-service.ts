@@ -16,6 +16,7 @@ import { SEAT_MESSAGES } from "../domain/seat-messages";
 import type {
   CreateInvitationInput,
   DirectUserCreationInput,
+  ReservedInvitation,
   SeatOverrideContext,
   SeatRepository,
 } from "./ports";
@@ -111,7 +112,7 @@ export class SeatService {
   async createInvitation(
     tenant: TenantContext,
     input: CreateInvitationInput,
-  ): Promise<Result<SeatInvitation, SeatLimitExceeded>> {
+  ): Promise<Result<ReservedInvitation, SeatLimitExceeded>> {
     const precheck = await this.assertCanAddSeat(tenant);
     if (!precheck.ok) return precheck;
 
@@ -142,9 +143,9 @@ export class SeatService {
    */
   async acceptInvitation(
     tenant: TenantContext,
-    invitationId: string,
+    rawToken: string,
   ): Promise<Result<SeatMember, SeatLimitExceeded>> {
-    const member = await this.repository.acceptInvitationIfSeatAvailable(tenant, invitationId, this.clock());
+    const member = await this.repository.acceptInvitationIfSeatAvailable(tenant, rawToken, this.clock());
     if (member === null) {
       return err(await this.seatLimitExceeded(tenant, "acceptFailedCapReached"));
     }
