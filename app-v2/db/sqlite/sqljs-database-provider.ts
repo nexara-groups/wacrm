@@ -46,14 +46,31 @@ export function toSqlitePlaceholders(
   params: readonly unknown[],
 ): { sql: string; params: unknown[] } {
   const ordered: unknown[] = [];
-  const rewritten = sql.replace(/\$(\d+)/g, (_match, index: string) => {
-    const position = Number(index) - 1;
-    if (position < 0 || position >= params.length) {
-      throw new Error(`SQL references $${index} but only ${params.length} parameter(s) were given`);
-    }
-    ordered.push(params[position]);
-    return "?";
-  });
+
+  // Comments and string literals are skipped, and that is not a nicety.
+  //
+  // Rewriting `$n` blindly means a `$1` written inside a SQL COMMENT becomes a
+  // second `?`, so this pushes a second parameter while SQLite — which ignores
+  // the comment — sees only one placeholder. `bind` then fails with "column
+  // index out of range", from a comment. Found exactly that way: an
+  // explanatory comment quoting "where a.id = $1" broke the query it
+  // documented. A string literal containing `$1` would corrupt the query more
+  // quietly still.
+  const rewritten = sql.replace(
+    // Order matters: each alternative consumes a region so `$n` inside it is
+    // never seen. Line comment, block comment, single- and double-quoted
+    // string, then the placeholder itself.
+    /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*")|\$(\d+)/g,
+    (match, skipped: string | undefined, index: string | undefined) => {
+      if (skipped !== undefined) return skipped;
+      const position = Number(index) - 1;
+      if (position < 0 || position >= params.length) {
+        throw new Error(`SQL references $${index} but only ${params.length} parameter(s) were given`);
+      }
+      ordered.push(params[position]);
+      return "?";
+    },
+  );
   return { sql: rewritten, params: ordered };
 }
 
