@@ -61,6 +61,26 @@ export interface NewWhatsAppConfigInput {
 
 export interface WhatsAppConfigRepositoryPort {
   findByPhoneNumberId(accountId: AccountId, phoneNumberId: string): Promise<WhatsAppConfigRecord | null>;
+
+  /**
+   * Resolve a config by `phone_number_id` ALONE, across every account.
+   *
+   * This exists for one caller: the inbound webhook. Meta's delivery
+   * identifies the destination by `phone_number_id` and nothing else — it
+   * carries no account id, because Meta has no concept of our tenants. So
+   * "which tenant is this message for?" is the FIRST question the webhook
+   * must answer, and every other method here presupposes the answer.
+   *
+   * Safe to look up globally because `phone_number_id` is globally unique in
+   * the schema — `idx_whatsapp_configs_phone_number_id` is a UNIQUE index on
+   * that column by itself (0006_whatsapp.sql), so this can return at most
+   * one row and cannot be used to enumerate or cross tenants.
+   *
+   * Everything downstream of this call is tenant-scoped using the accountId
+   * on the row RETURNED here, never one supplied by the caller. That is the
+   * whole point: the tenant is derived from trusted data, not asserted.
+   */
+  findByPhoneNumberIdGlobal(phoneNumberId: string): Promise<WhatsAppConfigRecord | null>;
   listByAccount(accountId: AccountId): Promise<readonly WhatsAppConfigRecord[]>;
   /** Insert-or-update keyed on `(account_id, phone_number_id)` — the
    *  migration's UNIQUE constraint on `phone_number_id`. */

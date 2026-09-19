@@ -48,6 +48,7 @@ import {
   verifyMetaSignature,
 } from "@/lib/webhook-signature";
 import { getWhatsAppContainer, resolveTenantByPhoneNumberId } from "@/lib/whatsapp-container";
+import { recordInboundMessages } from "@/lib/inbound-messages";
 
 // ---------------------------------------------------------------------------
 // Validation — Meta's payload is external input; every request is checked
@@ -185,8 +186,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, action: "ignored", reason: "no_phone_number_id" }, { status: 200 });
   }
 
-  const { repositories, service, demoAccountId } = await getWhatsAppContainer();
-  const config = await resolveTenantByPhoneNumberId(repositories, demoAccountId, phoneNumberId);
+  const { repositories, service } = await getWhatsAppContainer();
+  const config = await resolveTenantByPhoneNumberId(repositories, phoneNumberId);
   if (!config) {
     // Unrecognised phone_number_id — 200-with-no-action per the task's
     // security requirements, never a 5xx (Meta would just keep retrying a
@@ -196,11 +197,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const outcomes = await service.processWebhookEvent(config.accountId, parsedEnvelope.data as WebhookEnvelope);
 
+  // `processWebhookEvent` handles DELIVERABILITY (failed-status
+  // classification and suppression) and claims every event for idempotency.
+  // It does not touch the inbox — the whatsapp module does not know the
+  // conversations module exists, and should not. So recording an inbound
+  // message into a conversation happens HERE, in the composition layer,
+  // which is the only place allowed to know about both.
+  //
+  // Without this the webhook claimed inbound messages and discarded them:
+  // the response said `processed: 1` while the inbox stayed empty, because
+  // "processed" counted events claimed, not messages stored.
+  const stored = await recordInboundMessages(repositories, config.accountId, outcomes);
+
   return NextResponse.json(
     {
       ok: true,
       processed: outcomes.filter((o) => !o.deduped).length,
       deduped: outcomes.filter((o) => o.deduped).length,
+      // Reported separately from `processed` on purpose: these two numbers
+      // disagreeing is exactly the bug above, and a single count would hide
+      // it again.
+      stored: stored.stored,
+      storeFailures: stored.failures,
     },
     { status: 200 },
   );

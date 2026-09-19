@@ -26,7 +26,6 @@ import type { WhatsAppProvider } from "@modules/whatsapp/domain/whatsapp-provide
 import type { WhatsAppConfigRecord } from "@modules/whatsapp/application/ports";
 import type { ModuleRepositories } from "@modules/container";
 import type { TenantId } from "@shared/types";
-import { AccountId } from "@packages/domain/src/ids";
 import { getBaseServices } from "./container";
 
 /** The real provider, built once per process — never constructed per-request. */
@@ -88,10 +87,26 @@ export async function getWhatsAppContainer(providerOverride?: WhatsAppProvider):
  * task's allowed surface (`modules/whatsapp/**` is read-only per the task
  * brief's file list).
  */
+/**
+ * Resolve which tenant an inbound Meta delivery belongs to.
+ *
+ * Meta identifies the destination by `phone_number_id` and nothing else — it
+ * has no notion of our accounts — so this is the webhook's first question,
+ * before any tenant-scoped work can happen.
+ *
+ * `findByPhoneNumberIdGlobal` answers it from the UNIQUE index on
+ * `phone_number_id`, so at most one row can come back. Everything after this
+ * point scopes by the `accountId` ON THAT ROW, never one the caller supplied:
+ * the tenant is derived from trusted stored data, not asserted by the
+ * request.
+ *
+ * This replaced a version that guessed the single seeded demo account, which
+ * worked only while exactly one tenant existed and would have silently
+ * dropped every message for tenant number two.
+ */
 export async function resolveTenantByPhoneNumberId(
   repositories: ModuleRepositories,
-  demoAccountId: TenantId,
   phoneNumberId: string,
 ): Promise<WhatsAppConfigRecord | null> {
-  return repositories.whatsappConfig.findByPhoneNumberId(AccountId(demoAccountId), phoneNumberId);
+  return repositories.whatsappConfig.findByPhoneNumberIdGlobal(phoneNumberId);
 }

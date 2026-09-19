@@ -89,6 +89,23 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
     return row ? toConfigRecord(row) : null;
   }
 
+  async findByPhoneNumberIdGlobal(phoneNumberId: string): Promise<WhatsAppConfigRecord | null> {
+    const result = await this.db.query<WhatsAppConfigRow>(
+      `-- tenant-scope-exempt: the inbound webhook's tenant RESOLUTION step.
+       -- Meta identifies a delivery by phone_number_id only — it has no
+       -- account id to give us — so this is the one query that cannot be
+       -- account-scoped, because its job is to determine the account.
+       -- Bounded to a single row by the UNIQUE index on phone_number_id
+       -- (idx_whatsapp_configs_phone_number_id), so it cannot enumerate
+       -- tenants; callers must scope everything downstream by the accountId
+       -- on the row this returns.
+       select * from whatsapp_configs where phone_number_id = $1 limit 1`,
+      [phoneNumberId],
+    );
+    const row = result.rows[0];
+    return row ? toConfigRecord(row) : null;
+  }
+
   async listByAccount(accountId: AccountId): Promise<readonly WhatsAppConfigRecord[]> {
     const result = await this.db.query<WhatsAppConfigRow>(
       `-- tenant_id equivalent for this table: account_id
