@@ -123,6 +123,25 @@ describe("SignupService", () => {
     expect(repository.createdTenants).toHaveLength(1);
   });
 
+  it("defaults to autoVerifyEmail: true when no options are given — preserves original behavior", async () => {
+    const repository = new FakeSignupRepository();
+    const service = new SignupService(repository);
+
+    await service.signup(validInput());
+
+    expect(repository.createdTenants[0]?.autoVerifyEmail).toBe(true);
+  });
+
+  it("forwards autoVerifyEmail: false to the repository when a real email provider can send the verification", async () => {
+    const repository = new FakeSignupRepository();
+    const service = new SignupService(repository);
+
+    const outcome = await service.signup(validInput(), { autoVerifyEmail: false });
+
+    expect(outcome.ok).toBe(true);
+    expect(repository.createdTenants[0]?.autoVerifyEmail).toBe(false);
+  });
+
   it("treats a missing owner name as absent, not an empty string", async () => {
     const repository = new FakeSignupRepository();
     const service = new SignupService(repository);

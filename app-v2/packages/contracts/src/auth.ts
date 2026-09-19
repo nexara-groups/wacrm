@@ -33,5 +33,24 @@ export const signupResponseSchema = apiResult({
   accountId: accountIdSchema,
   ownerUserId: userIdSchema,
   email: z.email(),
+  /** Whether login will refuse this owner until they verify — follows
+   * CAPABILITY (a real email provider configured), never a flag. */
+  emailVerificationRequired: z.boolean(),
+  /** Present only when `emailVerificationRequired` is true: whether the
+   * verification email actually went out. */
+  emailSent: z.boolean().optional(),
 });
 export type SignupResponse = z.infer<typeof signupResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Verify email — redeems the token from the emailed verification link. The
+// token is the only input, same reasoning as `acceptInvitationRequestSchema`
+// in invitations.ts: no client-supplied identity, holding the token is what
+// authorizes this.
+// ---------------------------------------------------------------------------
+
+export const verifyEmailRequestSchema = z.object({ token: z.string().min(1) });
+export type VerifyEmailRequest = z.infer<typeof verifyEmailRequestSchema>;
+
+export const verifyEmailResponseSchema = apiResult({ email: z.email() });
+export type VerifyEmailResponse = z.infer<typeof verifyEmailResponseSchema>;

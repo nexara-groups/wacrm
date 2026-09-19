@@ -193,6 +193,24 @@ export interface CreateTenantInput {
   /** Already hashed (PBKDF2, `WORKERS_FREE_TIER_ITERATIONS`) by the service — this port never sees a raw password. */
   readonly passwordHash: string;
   readonly now: Date;
+  /**
+   * Whether the owner's `credentials`/`users` rows are created already
+   * verified. Optional and defaults to `true` (the original, pre-email
+   * behavior) so every existing caller/test that never set this keeps
+   * working unchanged.
+   *
+   * `false` is what a caller uses once it can actually deliver a
+   * verification email (`SignupService`'s caller decides this — see
+   * `app/api/auth/signup/route.ts` — never this port or its
+   * implementation, which have no idea whether email can send): the owner
+   * is created with `verified_at`/`email_verified_at` both `null`, and
+   * `JwtAuthProvider.login` refuses them until they redeem a verification
+   * token. Forcing this to `false` unconditionally would mean nobody could
+   * ever sign up on a deployment with no email provider configured — see
+   * this port's own file header history for why that was the ORIGINAL
+   * reason `true` was the only behavior that ever existed here.
+   */
+  readonly autoVerifyEmail?: boolean;
 }
 
 export type CreateTenantResult =

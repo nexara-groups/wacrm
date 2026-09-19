@@ -67,6 +67,8 @@ import { SqlCredentialsRepository } from "@nexara/infrastructure";
 import type { CredentialsAuthProvider, CredentialsRepository } from "@nexara/core/auth";
 import { PermissionService } from "@nexara/core/rbac";
 import type { TenantContext } from "@nexara/core/context";
+import type { EmailProvider } from "@nexara/core/email";
+import { selectEmailProvider } from "./email-provider";
 import { AppError } from "@shared/errors";
 import type { TenantId } from "@shared/types";
 import { seedContacts } from "./seed/contacts";
@@ -120,6 +122,14 @@ export interface BaseServices {
   readonly credentialsRepository: CredentialsRepository;
   readonly authProvider: CredentialsAuthProvider;
   /**
+   * Selected once per process by `selectEmailProvider` (see
+   * `lib/email-provider.ts`) — Console in dev/test, or whatever
+   * `EMAIL_PROVIDER` names on a real deployment, `UnavailableEmailProvider`
+   * if a real deployment configured nothing at all. No route ever picks a
+   * vendor itself.
+   */
+  readonly emailProvider: EmailProvider;
+  /**
    * The seeded demo account/owner, present only in the dev/test sql.js
    * harness (see `isWorkersRuntime` below). On a real D1 deployment nothing
    * is seeded — every existing consumer resolves its tenant from the
@@ -134,6 +144,7 @@ export interface AppContainer {
   readonly repositories: ModuleRepositories;
   readonly tenant: TenantContext;
   readonly ownerUserId: string;
+  readonly emailProvider: EmailProvider;
 }
 
 /**
@@ -228,6 +239,7 @@ async function buildD1BaseServices(): Promise<BaseServices> {
     repositories,
     credentialsRepository,
     authProvider,
+    emailProvider: selectEmailProvider(process.env, "workers"),
     demoAccountId: null,
     demoOwnerUserId: null,
   };
@@ -295,6 +307,7 @@ async function buildDevBaseServices(): Promise<BaseServices> {
     repositories,
     credentialsRepository,
     authProvider,
+    emailProvider: selectEmailProvider(process.env, "dev"),
     demoAccountId: accountId as TenantId,
     demoOwnerUserId: ownerId,
   };
@@ -335,5 +348,10 @@ export async function getContainer(): Promise<AppContainer> {
   if (!auth) {
     throw AppError.unauthenticated("No active session");
   }
-  return { repositories: base.repositories, tenant: auth.tenant, ownerUserId: auth.user.userId };
+  return {
+    repositories: base.repositories,
+    tenant: auth.tenant,
+    ownerUserId: auth.user.userId,
+    emailProvider: base.emailProvider,
+  };
 }

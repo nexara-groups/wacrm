@@ -15,12 +15,18 @@
  * request (a client-supplied id would let someone join or overwrite an
  * existing tenant) — `crypto.randomUUID()` here, nowhere else.
  *
- * WHY NO EMAIL VERIFICATION: this task has no email-sending infrastructure
- * in scope, so the owner is marked verified at creation time (see
- * `SignupRepository`'s implementation) — otherwise `JwtAuthProvider.login`
- * would refuse every new owner forever, since nothing in this slice could
- * ever complete a verification a real product would still want to add.
+ * EMAIL VERIFICATION IS THE CALLER'S DECISION, NOT THIS SERVICE'S: this
+ * module has no idea whether an email can actually be sent (that is an
+ * apps/web-level capability — see `apps/web/lib/email-provider.ts`'s
+ * `isRealEmailProviderConfigured`). `signup()`'s second parameter,
+ * `autoVerifyEmail`, defaults to `true` (the original behavior: the owner
+ * is marked verified at creation time, since otherwise
+ * `JwtAuthProvider.login` would refuse every new owner forever on a
+ * deployment that cannot yet complete a verification). A caller that CAN
+ * send mail passes `autoVerifyEmail: false` and is then responsible for
+ * actually issuing and emailing a verification token afterwards.
  *
+
  * WHY THIS SERVICE NEVER TOUCHES SQL: `scripts/check-architecture.mjs`
  * rule 2 forbids it outright — everything persistence-shaped goes through
  * `SignupRepository` (application/ports.ts).
@@ -61,10 +67,16 @@ function normalizedEmail(email: string): string {
   return email.trim().toLowerCase();
 }
 
+export interface SignupOptions {
+  /** See this file's header. Defaults to `true` — every existing caller
+   * that never set this keeps the original auto-verify behavior. */
+  readonly autoVerifyEmail?: boolean;
+}
+
 export class SignupService {
   constructor(private readonly repository: SignupRepository) {}
 
-  async signup(input: SignupInput): Promise<SignupOutcome> {
+  async signup(input: SignupInput, options: SignupOptions = {}): Promise<SignupOutcome> {
     // Checked BEFORE anything is generated or persisted — a public endpoint
     // gets no partial credit for a request that fails validation, and this
     // is cheaper than any DB round trip.
@@ -100,6 +112,7 @@ export class SignupService {
       email,
       passwordHash,
       now: new Date(),
+      autoVerifyEmail: options.autoVerifyEmail ?? true,
     });
 
     if (result.kind === "email_taken") {

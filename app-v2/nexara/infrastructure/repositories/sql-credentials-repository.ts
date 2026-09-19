@@ -77,6 +77,22 @@ export class SqlCredentialsRepository implements CredentialsRepository {
     return this.findUsableToken("email_verification_tokens", tenant, tokenHash);
   }
 
+  async findUsableEmailVerificationAnyTenant(
+    tokenHash: string,
+  ): Promise<{ tenantId: string; userId: string; email: string } | null> {
+    const { rows } = await this.db.query<TokenRow & { tenant_id: string }>(
+      `-- tenant-scope-exempt: the redeemer holds only the raw token from an
+       -- emailed link, never a tenant id to scope this by — see this
+       -- method's doc on the CredentialsRepository interface.
+       select tenant_id, user_id, email from email_verification_tokens
+        where token_hash = $1 and used_at is null and expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        limit 1`,
+      [tokenHash],
+    );
+    const row = rows[0];
+    return row ? { tenantId: row.tenant_id, userId: row.user_id, email: row.email } : null;
+  }
+
   async redeemEmailVerification(tenant: TenantContext, tokenHash: string, userId: string): Promise<boolean> {
     const redemptionId = crypto.randomUUID();
     const results = await this.db.batch([

@@ -25,6 +25,8 @@ import { SeatService } from "@modules/organizations/application/seat-service";
 import { getContainer } from "@/lib/container";
 import { toFreshInvitationDTO, toListedInvitationDTO, seatLimitExceededResponse } from "@/lib/seat-dto";
 import { internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
+import { sendInvitationEmail } from "@/lib/invitation-email";
+import { buildInvitationAcceptUrl } from "@/lib/email-templates";
 
 /** Invitation lifetime — not in SEAT_LIMITS.md's schema as a configured
  * value, so a fixed, documented default is used (also relied on as the
@@ -76,7 +78,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const body = parseOrThrow(inviteMemberRequestSchema, await request.json());
 
-    const { repositories, tenant, ownerUserId } = await getContainer();
+    const { repositories, tenant, ownerUserId, emailProvider } = await getContainer();
     const seatService = new SeatService({ repository: repositories.seats });
 
     const createdAt = new Date();
@@ -101,10 +103,33 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // The raw token is returned exactly once, here, because only its hash is
     // stored and there is no way to recover it afterwards. It belongs in the
-    // invite email; it is included in this response so the caller that just
-    // created the invitation can send that email. Nothing that LISTS
-    // invitations returns it — `toListedInvitationDTO` has no token field.
-    return ok({ invitation, token: result.value.token }, { status: 201 });
+    // invite email, sent right below; it is ALSO included in this response
+    // so an operator can resend it by hand — a legitimate fallback while
+    // email delivery is new — regardless of whether the email actually went
+    // out. Nothing that LISTS invitations returns it — `toListedInvitationDTO`
+    // has no token field.
+    //
+    // A failed send does NOT fail this request: the invitation row already
+    // exists (recoverable — an operator can still hand the token over), so
+    // reporting `emailSent: false` here is strictly better than either a
+    // false "it's sent" or discarding a perfectly good invitation over a
+    // transport hiccup.
+    const { emailSent, emailError } = await sendInvitationEmail({
+      emailProvider,
+      to: body.email,
+      role: body.role,
+      acceptUrl: buildInvitationAcceptUrl(result.value.token),
+    });
+
+    return ok(
+      {
+        invitation,
+        token: result.value.token,
+        emailSent,
+        ...(emailError ? { emailError } : {}),
+      },
+      { status: 201 },
+    );
   } catch (error) {
     if (isZodError(error)) return validationError(error);
     return internalError(error);

@@ -116,6 +116,42 @@ describe("SqlSignupRepository", () => {
     expect(membership?.deactivated_at).toBeNull();
   });
 
+  it("autoVerifyEmail: false creates the owner UNVERIFIED — users.email_verified_at and credentials.verified_at both null", async () => {
+    const tenantInput = input({ email: "pending-verify@example.test", autoVerifyEmail: false });
+    const result = await repo.createTenant(tenantInput);
+    expect(result.kind).toBe("created");
+
+    const user = (
+      await db.query(`select * from users where user_id = $1 and tenant_id = $2`, [
+        tenantInput.ownerUserId,
+        tenantInput.accountId,
+      ])
+    ).rows[0];
+    expect(user?.email_verified_at).toBeNull();
+
+    const credential = (
+      await db.query(`select * from credentials where user_id = $1 and tenant_id = $2`, [
+        tenantInput.ownerUserId,
+        tenantInput.accountId,
+      ])
+    ).rows[0];
+    expect(credential?.verified_at).toBeNull();
+  });
+
+  it("omitting autoVerifyEmail keeps the original auto-verify behavior", async () => {
+    const tenantInput = input({ email: "default-behavior@example.test" });
+    expect(tenantInput.autoVerifyEmail).toBeUndefined();
+    await repo.createTenant(tenantInput);
+
+    const credential = (
+      await db.query(`select * from credentials where user_id = $1 and tenant_id = $2`, [
+        tenantInput.ownerUserId,
+        tenantInput.accountId,
+      ])
+    ).rows[0];
+    expect(credential?.verified_at).not.toBeNull();
+  });
+
   it("lets two different signups create two fully separate tenants", async () => {
     const first = await repo.createTenant(input({ email: "first@example.test" }));
     const second = await repo.createTenant(input({ email: "second@example.test" }));

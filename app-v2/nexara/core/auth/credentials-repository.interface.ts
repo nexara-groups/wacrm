@@ -63,6 +63,23 @@ export interface CredentialsRepository {
   redeemPasswordReset(tenant: TenantContext, tokenHash: string, userId: UserId, passwordHash: string): Promise<boolean>;
   createEmailVerification(tenant: TenantContext, input: NewEmailVerificationInput): Promise<void>;
   findUsableEmailVerification(tenant: TenantContext, tokenHash: string): Promise<{ userId: UserId; email: string } | null>;
+  /**
+   * Same lookup as `findUsableEmailVerification`, but ACROSS ALL TENANTS —
+   * mirrors `findByEmailAnyTenant`'s reasoning above for the same shape of
+   * problem: the party redeeming a verification link has only the raw
+   * token from the emailed URL, never a tenant to scope the lookup by (a
+   * signup creates its OWN new tenant every time — see
+   * `modules/organizations/application/signup-service.ts` — so there is no
+   * single fixed tenant a verification link could carry instead).
+   *
+   * Safe to leave unscoped for the same reason the email lookup is: the
+   * token is a 256-bit server-generated secret, not something an attacker
+   * can search for, so nothing here depends on tenant isolation to be a
+   * real lookup rather than an enumeration.
+   */
+  findUsableEmailVerificationAnyTenant(
+    tokenHash: string,
+  ): Promise<{ tenantId: TenantId; userId: UserId; email: string } | null>;
   redeemEmailVerification(tenant: TenantContext, tokenHash: string, userId: UserId): Promise<boolean>;
   revokeSessions(tenant: TenantContext, userId: UserId): Promise<void>;
 }

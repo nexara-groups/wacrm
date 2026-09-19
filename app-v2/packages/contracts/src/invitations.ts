@@ -56,7 +56,23 @@ export const inviteMemberRequestSchema = z.object({
 });
 export type InviteMemberRequest = z.infer<typeof inviteMemberRequestSchema>;
 
-export const inviteMemberResponseSchema = apiResult({ invitation: invitationSchema });
+export const inviteMemberResponseSchema = apiResult({
+  invitation: invitationSchema,
+  /**
+   * The raw, one-time invitation token. Present ONLY on this create
+   * response (never on a list read — see `invitationSchema`'s header). It
+   * is also what the invite email carries; returning it here is an
+   * intentional operator fallback (resend by hand) alongside the email
+   * send, not a substitute for the schema's no-token-on-read rule above.
+   */
+  token: z.string().optional(),
+  /** Whether the invite email actually went out. `false` never means the
+   * invitation wasn't created — see `emailError`. */
+  emailSent: z.boolean(),
+  /** Present only when `emailSent` is false. A friendly, static message —
+   * never anything derived from a provider's raw error. */
+  emailError: z.string().optional(),
+});
 export type InviteMemberResponse = z.infer<typeof inviteMemberResponseSchema>;
 
 // ---------------------------------------------------------------------------

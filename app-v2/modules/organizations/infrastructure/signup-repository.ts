@@ -103,6 +103,11 @@ export class SqlSignupRepository implements SignupRepository {
 
   async createTenant(input: CreateTenantInput): Promise<CreateTenantResult> {
     const now = input.now.toISOString();
+    // Defaults to `true` — see `CreateTenantInput.autoVerifyEmail`'s own
+    // doc for why the default preserves the original behavior. `false` is
+    // supplied only once email can actually be sent (the caller's call,
+    // never this repository's).
+    const verifiedAt = input.autoVerifyEmail === false ? null : now;
     try {
       await this.db.batch([
         {
@@ -113,20 +118,20 @@ export class SqlSignupRepository implements SignupRepository {
         },
         {
           sql: `insert into users (user_id, tenant_id, email, display_name, role, email_verified_at, created_at, updated_at)
-                values ($1, $2, $3, $4, 'owner', $5, $5, $5)`,
-          params: [input.ownerUserId, input.accountId, input.email, input.ownerName, now],
+                values ($1, $2, $3, $4, 'owner', $5, $6, $6)`,
+          params: [input.ownerUserId, input.accountId, input.email, input.ownerName, verifiedAt, now],
         },
         {
-          // Self-serve signup has no email-sending infrastructure wired
-          // (out of scope for this task — see SignupService's header), so
-          // the owner is marked verified immediately rather than created in
-          // a state `JwtAuthProvider.login` would then permanently refuse
-          // (`login` requires `verified_at` and nothing in this slice can
-          // ever set it otherwise). A real email-verification flow can
-          // tighten this later without a schema change.
+          // Marked verified immediately UNLESS the caller says a real
+          // verification email is going out (`autoVerifyEmail: false`) —
+          // see `CreateTenantInput.autoVerifyEmail`'s doc. Auto-verifying
+          // unconditionally used to be the only option because nothing
+          // upstream could ever send that email; it still is the fallback
+          // when nothing can, so a deployment with no email provider
+          // configured never locks every new owner out.
           sql: `insert into credentials (user_id, tenant_id, email, password_hash, role, verified_at)
                 values ($1, $2, $3, $4, 'owner', $5)`,
-          params: [input.ownerUserId, input.accountId, input.email, input.passwordHash, now],
+          params: [input.ownerUserId, input.accountId, input.email, input.passwordHash, verifiedAt],
         },
         {
           sql: `insert into memberships (id, account_id, user_id, role, created_at, deactivated_at)

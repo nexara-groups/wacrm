@@ -110,4 +110,74 @@ describe("SqlCredentialsRepository against the real migrated schema", () => {
     expect(after!.sessionVersion).toBeGreaterThan(before!.sessionVersion);
     await db.dispose();
   });
+
+  describe("findUsableEmailVerificationAnyTenant", () => {
+    it("resolves the owning tenant from the token alone, same shape as findByEmailAnyTenant", async () => {
+      const { db, repo } = await freshRepo();
+      await repo.create(OTHER, {
+        userId: "u-verify", email: "verify@x.test", passwordHash: "h", role: "owner", verifiedAt: null,
+      } as never);
+      await repo.createEmailVerification(OTHER, {
+        tokenHash: "hash-of-the-raw-token",
+        userId: "u-verify" as never,
+        email: "verify@x.test",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+
+      const found = await repo.findUsableEmailVerificationAnyTenant("hash-of-the-raw-token");
+      expect(found).toEqual({ tenantId: OTHER.tenantId, userId: "u-verify", email: "verify@x.test" });
+      await db.dispose();
+    });
+
+    it("returns null for an unknown, consumed, or expired token", async () => {
+      const { db, repo } = await freshRepo();
+      await repo.create(TENANT, {
+        userId: "u-verify", email: "verify@x.test", passwordHash: "h", role: "owner", verifiedAt: null,
+      } as never);
+
+      expect(await repo.findUsableEmailVerificationAnyTenant("no-such-hash")).toBeNull();
+
+      await repo.createEmailVerification(TENANT, {
+        tokenHash: "expired-hash",
+        userId: "u-verify" as never,
+        email: "verify@x.test",
+        expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      expect(await repo.findUsableEmailVerificationAnyTenant("expired-hash")).toBeNull();
+
+      await repo.createEmailVerification(TENANT, {
+        tokenHash: "consumed-hash",
+        userId: "u-verify" as never,
+        email: "verify@x.test",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+      await repo.redeemEmailVerification(TENANT, "consumed-hash", "u-verify" as never);
+      expect(await repo.findUsableEmailVerificationAnyTenant("consumed-hash")).toBeNull();
+      await db.dispose();
+    });
+
+    it("the resolved tenant is what redeemEmailVerification actually needs — full round trip", async () => {
+      const { db, repo } = await freshRepo();
+      await repo.create(OTHER, {
+        userId: "u-verify", email: "verify@x.test", passwordHash: "h", role: "owner", verifiedAt: null,
+      } as never);
+      await repo.createEmailVerification(OTHER, {
+        tokenHash: "round-trip-hash",
+        userId: "u-verify" as never,
+        email: "verify@x.test",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      });
+
+      const found = await repo.findUsableEmailVerificationAnyTenant("round-trip-hash");
+      expect(found).not.toBeNull();
+      const redeemed = await repo.redeemEmailVerification(
+        { tenantId: found!.tenantId } as never,
+        "round-trip-hash",
+        found!.userId as never,
+      );
+      expect(redeemed).toBe(true);
+      expect((await repo.findByUserId(OTHER, "u-verify" as never))?.verifiedAt).not.toBeNull();
+      await db.dispose();
+    });
+  });
 });
