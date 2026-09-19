@@ -12,9 +12,23 @@ import { loginRequestSchema, toAuthUserDTO } from "@/lib/auth-dto";
 import { getBaseServices } from "@/lib/container";
 import { setSessionCookie } from "@/lib/session";
 import { fail, internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    // Before the password hash, not after: the ~6ms PBKDF2 cost is the thing
+    // being protected, so checking afterwards would have already paid it.
+    const limited = await checkRateLimit(request, "login");
+    if (!limited.allowed) {
+      return fail(
+        {
+          code: "rate_limited",
+          laymanMessage: "Too many attempts. Please wait a minute and try again.",
+        },
+        429,
+      );
+    }
+
     const body = parseOrThrow(loginRequestSchema, await request.json());
     const { authProvider } = await getBaseServices();
 

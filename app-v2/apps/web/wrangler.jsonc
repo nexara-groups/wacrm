@@ -30,6 +30,33 @@
 	// stream (db/migrations/d1/*.sql) rather than a copy — do not add a
 	// `migrations` folder under this directory; there is nothing to
 	// duplicate.
+	// Rate limiting for the two endpoints reachable without a session:
+	// /api/auth/login (which pays a ~6ms PBKDF2 hash per attempt, against a
+	// 10ms CPU budget) and /api/auth/signup (which writes four rows per call,
+	// against a 100,000-writes-a-day quota shared by the whole product).
+	// Read via `env.AUTH_RATE_LIMITER` in lib/rate-limit.ts, keyed by
+	// CF-Connecting-IP with a separate counter per endpoint.
+	//
+	// `period` accepts only 10 or 60. 20 requests/60s per IP is loose enough
+	// that a person fumbling their password is never affected, and tight
+	// enough that a single-machine guessing loop gets almost nothing done.
+	//
+	// The counter is PER-COLOCATION, not global, so a distributed attacker's
+	// effective ceiling is higher than 20 — this is a flood brake, not a
+	// lockout, and lib/rate-limit.ts says so at more length.
+	//
+	// namespace_id is an arbitrary identifier YOU choose; it only has to stay
+	// stable, because changing it resets the counters.
+	"ratelimits": [
+		{
+			"name": "AUTH_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 20,
+				"period": 60
+			}
+		}
+	],
 	"d1_databases": [
 		{
 			"binding": "DB",

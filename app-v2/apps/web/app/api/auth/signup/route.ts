@@ -22,9 +22,25 @@ import { signupRequestSchema } from "@packages/contracts/src/auth";
 import { getBaseServices } from "@/lib/container";
 import { SignupService } from "@modules/organizations/application/signup-service";
 import { fail, internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    // First thing, before parsing or touching the database. This route writes
+    // FOUR rows per successful call, and the free tier meters 100,000 row
+    // writes a day across the whole product — an unthrottled loop here is a
+    // denial of service against every tenant, not just spam.
+    const limited = await checkRateLimit(request, "signup");
+    if (!limited.allowed) {
+      return fail(
+        {
+          code: "rate_limited",
+          laymanMessage: "Too many sign-up attempts. Please wait a minute and try again.",
+        },
+        429,
+      );
+    }
+
     const body = parseOrThrow(signupRequestSchema, await request.json());
     const { repositories } = await getBaseServices();
     const service = new SignupService(repositories.signup);

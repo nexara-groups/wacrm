@@ -129,6 +129,38 @@ real deployment, absent in Node (`next dev`, `vitest run`). This is the
   simply never called here, not merely skipped by a flag), so there is no
   code path that can seed demo data into a real D1 database.
 
+### Rate limiting — configured, and it must stay configured
+
+`wrangler.jsonc` declares a `ratelimits` binding, `AUTH_RATE_LIMITER`, at 20
+requests per 60 seconds per IP. `lib/rate-limit.ts` reads it and applies a
+separate counter to `/api/auth/login` and `/api/auth/signup`.
+
+Both endpoints are reachable without a session, and both are expensive in a
+way that matters on the free tier:
+
+| Endpoint | Cost per call | Free-tier quota it eats |
+|---|---|---|
+| `/api/auth/login` | ~6ms CPU (PBKDF2) | 10ms CPU budget per request |
+| `/api/auth/signup` | 4 row writes | 100,000 writes/day, product-wide |
+
+~25,000 unthrottled signup calls exhaust a day's write quota for every
+tenant. That is a denial of service with a curl loop, not spam.
+
+**It fails open when the binding is absent**, which is right for local dev and
+wrong to discover in production. `wrangler deploy --dry-run` prints the
+bindings it resolved — check `env.AUTH_RATE_LIMITER (20 requests/60s)` appears
+before you believe the protection exists. `lib/rate-limit.test.ts` covers the
+fail-open path explicitly, including that `enforced: false` distinguishes
+"within budget" from "never checked".
+
+Two honest limits. The counter is **per-colocation, not global**, so a
+distributed attacker's real ceiling is higher than 20; and the window is fixed
+at 10 or 60 seconds, so an attacker pacing below the limit is not slowed at
+all. This is a flood brake for the cheap single-machine attack, which is the
+one that actually shows up. It is not a lockout, and it is not a substitute
+for the 12-character password minimum — which is what actually compensates for
+PBKDF2 running below the OWASP iteration floor.
+
 ### Multi-tenant auth — resolved
 
 One Workers deployment serves EVERY tenant in its D1 database.
