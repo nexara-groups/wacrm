@@ -21,7 +21,12 @@
  * This seeder writes the one demo credential through the REAL
  * `CredentialsRepository` — never a raw insert into `credentials`.
  */
-import * as bcrypt from "bcryptjs";
+// PBKDF2 via WebCrypto, not bcryptjs: the auth provider verifies with
+// `verifyPassword`, which only understands the `pbkdf2-sha256$...` format, so
+// a bcrypt hash here would seed an account that can never log in. It is also
+// the only form that runs inside Cloudflare Workers' CPU budget.
+import { hashPassword } from "@modules/identity/domain/token-hashing";
+import { WORKERS_FREE_TIER_ITERATIONS } from "@nexara/core/auth/providers/jwt-auth-provider";
 import type { CredentialsRepository } from "@nexara/core/auth";
 import type { TenantContext } from "@nexara/core/context";
 
@@ -46,7 +51,7 @@ export async function seedUsers({
   const existing = await credentialsRepository.findByEmail(tenant, DEMO_LOGIN_EMAIL);
   if (existing) return;
 
-  const passwordHash = await bcrypt.hash(DEMO_LOGIN_PASSWORD, 10);
+  const passwordHash = await hashPassword(DEMO_LOGIN_PASSWORD, WORKERS_FREE_TIER_ITERATIONS);
   await credentialsRepository.create(tenant, {
     userId: ownerUserId,
     email: DEMO_LOGIN_EMAIL,

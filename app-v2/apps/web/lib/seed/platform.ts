@@ -42,7 +42,12 @@
  * to author fixture rows, never reachable through any route or login.
  */
 import { randomUUID } from "node:crypto";
-import * as bcrypt from "bcryptjs";
+// PBKDF2 via WebCrypto, not bcryptjs: the auth provider verifies with
+// `verifyPassword`, which only understands the `pbkdf2-sha256$...` format, so
+// a bcrypt hash here would seed an account that can never log in. It is also
+// the only form that runs inside Cloudflare Workers' CPU budget.
+import { hashPassword } from "@modules/identity/domain/token-hashing";
+import { WORKERS_FREE_TIER_ITERATIONS } from "@nexara/core/auth/providers/jwt-auth-provider";
 import type { CredentialsRepository } from "@nexara/core/auth";
 import type { TenantContext } from "@nexara/core/context";
 import type { VerifiedPlatformPrincipal } from "@nexara/core/rbac";
@@ -167,7 +172,7 @@ export async function seedPlatformCredentials({
   now,
   grants,
 }: SeedPlatformCredentialsContext): Promise<void> {
-  const passwordHash = await bcrypt.hash(DEMO_PLATFORM_PASSWORD, 10);
+  const passwordHash = await hashPassword(DEMO_PLATFORM_PASSWORD, WORKERS_FREE_TIER_ITERATIONS);
   const entries: readonly [string, string][] = [
     [grants.supportUserId, DEMO_PLATFORM_SUPPORT_EMAIL],
     [grants.adminAUserId, DEMO_PLATFORM_ADMIN_A_EMAIL],
