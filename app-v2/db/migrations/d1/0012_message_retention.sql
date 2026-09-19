@@ -1,38 +1,55 @@
 -- 0012_message_retention.sql (D1 / SQLite dialect)
 --
--- Per-contact message retention. Resolved the same way seat limits are
--- (0003_seat_limits.sql), because the product rule is the same shape:
+-- Message retention: keep 60 days, delete what is older.
 --
---   resolved_retention(account) =
---     account.message_retention_override ?? platform_settings.default_message_retention_per_contact
+-- TIME-based, not count-based, and that was a real choice. A per-contact
+-- count cap ("keep the last 500") gives every contact a different amount of
+-- history — 500 messages is three days for a chatty customer and three
+-- years for a quiet one — so nobody can state the policy, to a customer or
+-- to a regulator. A window can be stated: "we keep 60 days".
 --
--- Default 500, not 200. The lower the cap, the more likely it is that the
--- message Meta asks about is already gone: META_ERROR_TAXONOMY.md and
--- SUPER_ADMIN_CONSOLE.md §7 both assume a compliance case can produce the
--- message a query is about, and a compliance case can only ever show what
--- still exists. Trimming history and answering Meta are in direct tension,
--- so the default leans toward being able to answer, and an account that
--- would rather save space can be set lower.
+-- Why 60 and not less: Meta's own Cloud API retains message content for
+-- only 30 days, so Meta cannot ask about the text of an older message —
+-- they no longer have it either. 60 days clears that with margin. The
+-- longer-tail risk is a customer dispute, where the evidence burden is ours
+-- rather than Meta's, and 60 days is the product owner's call on that
+-- trade.
 --
--- NOTE for whoever implements the trim: `messages.reply_to` REFERENCES
--- messages(id). SQLite enforces foreign keys only when
--- `PRAGMA foreign_keys = ON`, which this project's sql.js harness does not
--- set — but D1 enforces them. So a trim that deletes a message another
--- surviving message replies to PASSES in dev and FAILS in production. The
--- trim must null the dangling `reply_to` of survivors in the same batch as
--- the delete.
+-- Resolved like seat limits (0003_seat_limits.sql), same shape of rule:
+--   resolved_retention_days(account) =
+--     accounts.message_retention_days_override
+--       ?? platform_settings.default_message_retention_days
+--
+-- No count cap alongside it, deliberately. The worry a count cap answers is
+-- one runaway thread eating the 5 GB database, and the arithmetic says it
+-- cannot: at roughly 500 bytes a message, 5 GB is ~10 million messages, so
+-- filling it inside a 60-day window needs ~166,000 messages a day from one
+-- account. That is not this product's failure mode, and an unused safety
+-- valve is still code to maintain and reason about.
+--
+-- IMPLEMENTATION NOTE — the trap this migration exists downstream of:
+-- `messages.reply_to` REFERENCES messages(id). D1 enforces foreign keys;
+-- stock SQLite does not. The harness now sets `PRAGMA foreign_keys = ON` to
+-- match (see db/sqlite/sqljs-database-provider.ts), because a trim that
+-- deletes a message some surviving message replies to SUCCEEDS with
+-- enforcement off and is REJECTED with it on. The trim MUST null the
+-- dangling `reply_to` of survivors in the same batch() as the delete.
 
 ALTER TABLE platform_settings
-  ADD COLUMN default_message_retention_per_contact INTEGER NOT NULL DEFAULT 500;
+  ADD COLUMN default_message_retention_days INTEGER NOT NULL DEFAULT 60;
 
-ALTER TABLE accounts ADD COLUMN message_retention_override INTEGER;
+ALTER TABLE accounts ADD COLUMN message_retention_days_override INTEGER;
 ALTER TABLE accounts ADD COLUMN message_retention_reason TEXT;
 ALTER TABLE accounts ADD COLUMN message_retention_set_by TEXT;
 ALTER TABLE accounts ADD COLUMN message_retention_set_at TEXT;
 
--- The trim's own working index: "the Nth newest message for this contact".
--- Without it, every trim decision is a scan, and on D1's free tier — which
--- meters rows read — a scan per inbound message is the most expensive
--- possible way to save storage.
-CREATE INDEX IF NOT EXISTS idx_messages_contact_created
-  ON messages(account_id, contact_id, created_at DESC);
+-- The trim's working index: "this account's messages older than X".
+-- Without it every sweep is a full scan, and on a tier that meters rows
+-- read, scanning the whole table to save storage is a poor trade.
+CREATE INDEX IF NOT EXISTS idx_messages_account_created
+  ON messages(account_id, created_at);
+
+-- Finding the survivors whose `reply_to` points at a row about to be
+-- deleted, without scanning.
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to
+  ON messages(account_id, reply_to);
