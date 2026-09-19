@@ -68,7 +68,7 @@ describe("every wired repository reaches the real schema", () => {
         "broadcastRecipients", "broadcasts", "complianceCases", "contactState", "contacts",
         "conversations", "deviceInstallations", "emailTokens", "impersonation", "messageTemplates",
         "messages", "onboarding", "platformAuditLog", "platformRoleGrants", "refreshTokens",
-        "seats", "sessions", "users", "webhookEvents", "whatsappConfig",
+        "seats", "sessions", "signup", "users", "webhookEvents", "whatsappConfig",
       ].sort(),
     );
     await db.dispose();

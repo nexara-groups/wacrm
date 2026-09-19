@@ -50,7 +50,8 @@ import type {
 import { OnboardingSqlRepository } from "./meta-onboarding/infrastructure/onboarding-repository";
 
 import { SqlSeatRepository } from "./organizations/infrastructure/seat-repository";
-import type { SeatRepository } from "./organizations/application/ports";
+import { SqlSignupRepository } from "./organizations/infrastructure/signup-repository";
+import type { SeatRepository, SignupRepository } from "./organizations/application/ports";
 
 import { SqlUserRepository } from "./identity/infrastructure/user-repository";
 import { SqlSessionRepository } from "./identity/infrastructure/session-repository";
@@ -105,6 +106,8 @@ export interface ModuleRepositories {
   readonly onboarding: OnboardingSqlRepository;
 
   readonly seats: SeatRepository;
+  /** Self-serve tenant creation — the one place a brand-new `accounts` row is born. */
+  readonly signup: SignupRepository;
 
   readonly users: UserRepositoryPort;
   readonly sessions: SessionRepositoryPort;
@@ -178,6 +181,7 @@ export function buildModuleRepositories(
     onboarding: new OnboardingSqlRepository(database),
 
     seats: new SqlSeatRepository(database),
+    signup: new SqlSignupRepository(database),
 
     users: new SqlUserRepository(database),
     sessions: new SqlSessionRepository(database),

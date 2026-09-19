@@ -22,12 +22,14 @@ import { NextResponse, type NextRequest } from "next/server";
 /** Keep in sync with `lib/session.ts`'s `SESSION_COOKIE_NAME`. */
 const SESSION_COOKIE_NAME = "wacrm_session";
 
-const PUBLIC_PAGE_PATHS = new Set(["/login"]);
+const PUBLIC_PAGE_PATHS = new Set(["/login", "/signup"]);
 
 function isPublicApiPath(pathname: string): boolean {
   // Every /api/auth/* route handles its own authenticated/unauthenticated
   // cases (login IS the credential-entry point; session/logout must both
-  // answer gracefully with no cookie at all).
+  // answer gracefully with no cookie at all; signup — /api/auth/signup —
+  // is the front door for a tenant that doesn't exist yet, so by
+  // definition nobody calling it can hold a session cookie).
   if (pathname.startsWith("/api/auth/")) return true;
 
   // Meta's webhook caller has no session cookie and never will, so without

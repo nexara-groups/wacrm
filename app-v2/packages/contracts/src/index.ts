@@ -6,6 +6,7 @@
  */
 export * from "./common";
 
+export * from "./auth";
 export * from "./contacts";
 export * from "./conversations";
 export * from "./messages";
