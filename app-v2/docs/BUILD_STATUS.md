@@ -29,10 +29,12 @@ fails without the code — not "the report said so".
 
 ## Next, in order
 
-1. **Email delivery** — nothing sends mail. Invitations issue a real token that
-   cannot reach the invitee, and signup marks the owner verified because
-   refusing unverified logins would otherwise lock them out of the account they
-   just created. Both are disclosed in code, neither is fixed.
+1. **An accept-invitation route.** The invite email links to
+   `/accept-invite?token=...` and no such route or page exists, so invitations
+   now reach people and still cannot be accepted. `SeatService.acceptInvitation`
+   and the token lookup are wired and tested in `modules/`; nothing in
+   `apps/web` calls them. This is the last step between "invitations exist" and
+   "invitations work".
 2. **Remaining send routes** — template, media, interactive. The service layer
    handles all of them; only text has a route.
 3. **~20 unported screens** — dashboard, settings, templates, automations,
