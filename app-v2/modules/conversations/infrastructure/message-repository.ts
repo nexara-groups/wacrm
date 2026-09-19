@@ -40,7 +40,7 @@ import type {
   MessageRecord,
 } from "../domain/message";
 import type { SequenceCursor, SyncCursor } from "../domain/incremental-sync";
-import type { MessageRepository, NewMessageInput, ThreadPage } from "../application/ports";
+import type { MessageRepository, NewMessageInput, ThreadPage, ThreadSearchPage } from "../application/ports";
 
 /** Columns of `messages`, in one place so every read maps identically. */
 const COLUMNS = `id, account_id, conversation_id, contact_id, wamid, direction, type, body,
@@ -250,6 +250,35 @@ export class SqlMessageRepository implements MessageRepository {
       hasMore && last !== undefined ? { at: last.createdAt, id: last.id } : null;
 
     return { items, nextCursor };
+  }
+
+  /**
+   * page/pageSize + total read backing
+   * `GET /api/conversations/[conversationId]/messages` — `count(*)` +
+   * `limit`/`offset` in SQL, newest-first (matching `listThread`), so the
+   * route never walks the whole thread to bridge page/cursor semantics.
+   */
+  async listThreadPage(
+    tenant: TenantContext,
+    conversationId: ConversationId,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<ThreadSearchPage> {
+    const counted = await this.db.query(
+      `select count(*) as total from messages where account_id = $1 and conversation_id = $2`,
+      [tenant.tenantId, conversationId],
+    );
+    const total = Number(counted.rows[0]?.total ?? 0);
+
+    const pageSize = Math.max(1, page.pageSize);
+    const offset = Math.max(0, (Math.max(1, page.page) - 1) * pageSize);
+    const { rows } = await this.db.query(
+      `select ${COLUMNS} from messages
+        where account_id = $1 and conversation_id = $2
+        order by created_at desc, id desc
+        limit $3 offset $4`,
+      [tenant.tenantId, conversationId, pageSize, offset],
+    );
+    return { items: rows.map(toMessageRecord), total };
   }
 
   async listChangedSince(

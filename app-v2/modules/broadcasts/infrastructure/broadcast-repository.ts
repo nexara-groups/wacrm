@@ -39,6 +39,8 @@ import type {
   BroadcastRecipientRepositoryPort,
   BroadcastRecord,
   BroadcastRepositoryPort,
+  BroadcastSearchFilter,
+  BroadcastSearchPage,
   NewBroadcastInput,
   NewBroadcastRecipientInput,
   Page,
@@ -163,6 +165,51 @@ export class SqlBroadcastRepository implements BroadcastRepositoryPort {
       [accountId, cursor, effectiveLimit + 1],
     );
     return toPage(rows, effectiveLimit, toBroadcastRecord, (r) => r.id);
+  }
+
+  /**
+   * page/pageSize + total read backing `GET /api/broadcasts`. Same
+   * positional-parameter shape as `SqlContactRepository.search`: every
+   * predicate is a pushed value plus a `$n` placeholder, never
+   * string-interpolated.
+   */
+  async search(
+    accountId: AccountId,
+    filter: BroadcastSearchFilter,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<BroadcastSearchPage> {
+    const where: string[] = [];
+    const params: unknown[] = [accountId];
+
+    if (filter.status !== undefined) {
+      params.push(filter.status);
+      where.push(`status = $${params.length}`);
+    }
+    if (filter.search !== undefined && filter.search.trim().length > 0) {
+      params.push(`%${filter.search.trim().toLowerCase()}%`);
+      where.push(`lower(name) like $${params.length}`);
+    }
+
+    const extraSql = where.length > 0 ? ` and ${where.join(" and ")}` : "";
+
+    const counted = await this.db.query<{ total: number } & Row>(
+      `select count(*) as total from broadcasts where account_id = $1${extraSql}
+       -- tenant_id equivalent for this table: account_id`,
+      params,
+    );
+    const total = Number(counted.rows[0]?.total ?? 0);
+
+    const pageSize = Math.max(1, page.pageSize);
+    const offset = Math.max(0, (Math.max(1, page.page) - 1) * pageSize);
+    params.push(pageSize, offset);
+    const { rows } = await this.db.query<BroadcastRow>(
+      `select ${BROADCAST_COLUMNS} from broadcasts where account_id = $1${extraSql}
+        order by created_at desc, id desc
+        limit $${params.length - 1} offset $${params.length}
+       -- tenant_id equivalent for this table: account_id`,
+      params,
+    );
+    return { items: rows.map(toBroadcastRecord), total };
   }
 
   async updateStatus(accountId: AccountId, broadcastId: BroadcastId, status: BroadcastStatus): Promise<void> {

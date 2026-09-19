@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provider";
+import { RowCountingDatabaseProvider } from "../../../db/sqlite/row-counting-database-provider";
 import { runMigrations } from "../../../db/sqlite/run-migrations";
 import { SqlBroadcastRecipientRepository, SqlBroadcastRepository } from "./broadcast-repository";
 import { AccountId, ContactId, TemplateId, UserId } from "../../../packages/domain/src/ids";
@@ -347,5 +348,99 @@ describe("SqlBroadcastRecipientRepository", () => {
     expect(untouched?.status).toBe("pending");
     expect(untouched?.errorCode).toBeNull();
     expect(untouched?.disposition).toBeNull();
+  });
+});
+
+describe("search() — the page/pageSize + total read backing GET /api/broadcasts", () => {
+  it("filters by status and by name (search), case-insensitively", async () => {
+    const draft = await makeBroadcast();
+    const sending = await broadcasts.create({
+      accountId: ACCOUNT_A,
+      name: "New Year blast",
+      templateId: TEMPLATE,
+      createdBy: CREATED_BY,
+      scheduledAt: null,
+    });
+    await broadcasts.updateStatus(ACCOUNT_A, sending.id, "sending");
+
+    const draftsOnly = await broadcasts.search(ACCOUNT_A, { status: "draft" }, { page: 1, pageSize: 10 });
+    expect(draftsOnly.items.map((b) => b.id)).toEqual([draft.id]);
+    expect(draftsOnly.total).toBe(1);
+
+    const byName = await broadcasts.search(ACCOUNT_A, { search: "diwali" }, { page: 1, pageSize: 10 });
+    expect(byName.items.map((b) => b.id)).toEqual([draft.id]);
+    expect(byName.total).toBe(1);
+  });
+
+  it("paginates page/pageSize with a real total, and every row appears exactly once across pages", async () => {
+    const created = [];
+    for (let i = 0; i < 25; i++) {
+      const b = await broadcasts.create({
+        accountId: ACCOUNT_A,
+        name: `Broadcast ${i}`,
+        templateId: TEMPLATE,
+        createdBy: CREATED_BY,
+        scheduledAt: null,
+      });
+      // Give each row a distinct created_at so page ordering is deterministic
+      // (rows created in the same test tick can otherwise share a timestamp
+      // and tie-break on a random uuid).
+      await db.query(`update broadcasts set created_at = $1 where account_id = $2 and id = $3`, [
+        `2026-01-01T00:${String(i).padStart(2, "0")}:00.000Z`,
+        ACCOUNT_A,
+        b.id,
+      ]);
+      created.push(b);
+    }
+
+    const page1 = await broadcasts.search(ACCOUNT_A, {}, { page: 1, pageSize: 10 });
+    expect(page1.items).toHaveLength(10);
+    expect(page1.total).toBe(25);
+    expect(page1.items[0]?.name).toBe("Broadcast 24");
+
+    const page2 = await broadcasts.search(ACCOUNT_A, {}, { page: 2, pageSize: 10 });
+    expect(page2.items).toHaveLength(10);
+
+    const page3 = await broadcasts.search(ACCOUNT_A, {}, { page: 3, pageSize: 10 });
+    expect(page3.items).toHaveLength(5);
+    expect(page3.total).toBe(25);
+
+    const seen = [...page1.items, ...page2.items, ...page3.items].map((b) => b.id);
+    expect(new Set(seen).size).toBe(25);
+  });
+
+  it("TENANT ISOLATION — account B's search never sees account A's broadcasts", async () => {
+    await makeBroadcast(ACCOUNT_A);
+
+    const result = await broadcasts.search(ACCOUNT_B, {}, { page: 1, pageSize: 10 });
+    expect(result.items).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+});
+
+describe("search() — D1 rows-read cost (the bug this task fixes)", () => {
+  it("listing page 1 of 20 over 400 broadcasts reads a bounded number of rows, not the whole table", async () => {
+    for (let i = 0; i < 400; i++) {
+      await broadcasts.create({
+        accountId: ACCOUNT_A,
+        name: `Broadcast ${i}`,
+        templateId: TEMPLATE,
+        createdBy: CREATED_BY,
+        scheduledAt: null,
+      });
+    }
+
+    const counting = new RowCountingDatabaseProvider(db);
+    const costRepo = new SqlBroadcastRepository(counting);
+
+    const page = await costRepo.search(ACCOUNT_A, {}, { page: 1, pageSize: 20 });
+
+    expect(page.items).toHaveLength(20);
+    expect(page.total).toBe(400);
+    // One COUNT(*) row + 20 page rows = 21. The pre-fix route walked the
+    // ENTIRE cursor-paginated `listForAccount` result (400+ rows) to compute
+    // this same page; this assertion is what fails against that code path
+    // and passes against the direct SQL COUNT(*)/LIMIT/OFFSET read.
+    expect(counting.totalRowsReturned).toBeLessThan(60);
   });
 });

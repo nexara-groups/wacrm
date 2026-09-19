@@ -33,6 +33,8 @@ import type {
   ConversationFilter,
   ConversationListPage,
   ConversationRepository,
+  ConversationSearchFilter,
+  ConversationSearchPage,
 } from "../application/ports";
 
 /** Columns of `conversations`, in one place so every read maps identically. */
@@ -194,6 +196,74 @@ export class SqlConversationRepository implements ConversationRepository {
       hasMore && last !== undefined ? { at: last.lastMessageAt ?? "", id: last.id } : null;
 
     return { items, nextCursor };
+  }
+
+  /**
+   * page/pageSize + total read backing `GET /api/conversations`. Same
+   * positional-parameter discipline as `list()` above and
+   * `SqlContactRepository.search` (the reference shape for this method):
+   * every predicate is built with a pushed value and a `$n` placeholder,
+   * never string-interpolated. `search` is resolved with an `exists`
+   * subquery against `contacts` — scoped to THIS conversation's own
+   * `account_id`/`contact_id`, never a full contacts table load — so the
+   * route no longer needs `ContactRepository.listAll`.
+   */
+  async search(
+    tenant: TenantContext,
+    filter: ConversationSearchFilter,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<ConversationSearchPage> {
+    // Deliberately NOT seeded with the tenant predicate: it lives literally in
+    // the statement below, so it cannot be refactored away.
+    const where: string[] = [];
+    const params: unknown[] = [tenant.tenantId];
+
+    if (filter.status !== undefined) {
+      params.push(filter.status);
+      where.push(`status = $${params.length}`);
+    }
+    if (filter.assignedUserId !== undefined) {
+      if (filter.assignedUserId === null) {
+        where.push(`assigned_to is null`);
+      } else {
+        params.push(filter.assignedUserId);
+        where.push(`assigned_to = $${params.length}`);
+      }
+    }
+    if (filter.unreadOnly === true) {
+      where.push(`unread_count > 0`);
+    }
+    if (filter.search !== undefined && filter.search.trim().length > 0) {
+      params.push(`%${filter.search.trim().toLowerCase()}%`);
+      const p = `$${params.length}`;
+      where.push(
+        `exists (
+           select 1 from contacts ct
+            where ct.account_id = conversations.account_id
+              and ct.id = conversations.contact_id
+              and (lower(coalesce(ct.display_name, '')) like ${p} or lower(ct.phone) like ${p})
+         )`,
+      );
+    }
+
+    const extraSql = where.length > 0 ? ` and ${where.join(" and ")}` : "";
+
+    const counted = await this.db.query(
+      `select count(*) as total from conversations where account_id = $1${extraSql}`,
+      params,
+    );
+    const total = Number(counted.rows[0]?.total ?? 0);
+
+    const pageSize = Math.max(1, page.pageSize);
+    const offset = Math.max(0, (Math.max(1, page.page) - 1) * pageSize);
+    params.push(pageSize, offset);
+    const { rows } = await this.db.query(
+      `select ${COLUMNS} from conversations where account_id = $1${extraSql}
+        order by coalesce(last_message_at, '') desc, id desc
+        limit $${params.length - 1} offset $${params.length}`,
+      params,
+    );
+    return { items: rows.map(toConversationRecord), total };
   }
 
   async listChangedSince(

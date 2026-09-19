@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provider";
+import { RowCountingDatabaseProvider } from "../../../db/sqlite/row-counting-database-provider";
 import { runMigrations } from "../../../db/sqlite/run-migrations";
 import { SqlConversationRepository } from "./conversation-repository";
+import { SqlContactRepository } from "../../contacts/infrastructure/contact-repository";
 import type { TenantContext } from "@nexara/core/context";
 import type { ContactId, ConversationId } from "@packages/domain";
+import type { PhoneNumber } from "../../../packages/domain/src/phone-number";
 import { INITIAL_SYNC_CURSOR } from "../domain/incremental-sync";
 import { markRead, recordInboundMessage, recordOutboundMessage } from "../domain/conversation";
 
@@ -227,5 +230,124 @@ describe("updated_at is the sync cursor and MUST advance on every save", () => {
     const future = "2099-01-01T00:00:00.000Z";
     const saved = await repo.save(A, { ...created, updatedAt: future as never });
     expect(saved!.updatedAt).toBe(future);
+  });
+});
+
+describe("search() — the page/pageSize + total read backing GET /api/conversations", () => {
+  it("filters by status, assignedUserId (including explicit unassigned), and unreadOnly", async () => {
+    await repo.create(A, { id: conversationId("11111111-1111-1111-1111-111111111111"), contactId: contact("c-1"), now: "t0" });
+    const c2 = await repo.create(A, { id: conversationId("22222222-2222-2222-2222-222222222222"), contactId: contact("c-2"), now: "t0" });
+    const c3 = await repo.create(A, { id: conversationId("33333333-3333-3333-3333-333333333333"), contactId: contact("c-3"), now: "t0" });
+
+    await repo.save(A, { ...c2, status: "closed", assignedUserId: "u-1" as never });
+    await repo.save(A, recordInboundMessage(c3, "2026-01-01T00:00:01.000Z")); // unread
+
+    const openOnly = await repo.search(A, { status: "open" }, { page: 1, pageSize: 10 });
+    expect(openOnly.items.map((c) => c.contactId).sort()).toEqual(["c-1", "c-3"]);
+    expect(openOnly.total).toBe(2);
+
+    const assigned = await repo.search(A, { assignedUserId: "u-1" }, { page: 1, pageSize: 10 });
+    expect(assigned.items.map((c) => c.contactId)).toEqual(["c-2"]);
+
+    const unassigned = await repo.search(A, { assignedUserId: null }, { page: 1, pageSize: 10 });
+    expect(unassigned.items.map((c) => c.contactId).sort()).toEqual(["c-1", "c-3"]);
+    expect(unassigned.total).toBe(2);
+
+    const unread = await repo.search(A, { unreadOnly: true }, { page: 1, pageSize: 10 });
+    expect(unread.items.map((c) => c.contactId)).toEqual(["c-3"]);
+  });
+
+  it("search filters by the linked contact's name/phone, resolved in SQL — not a full contacts load", async () => {
+    const contacts = new SqlContactRepository(db);
+    const phone = (p: string) => p as unknown as PhoneNumber;
+    const alice = await contacts.create(A, {
+      phoneNumber: phone("+15550001111"),
+      displayName: "Alice Ng",
+      email: null,
+      company: null,
+    });
+    const bob = await contacts.create(A, {
+      phoneNumber: phone("+15550002222"),
+      displayName: "Bob Lee",
+      email: null,
+      company: null,
+    });
+    await repo.create(A, { id: conversationId("11111111-1111-1111-1111-111111111111"), contactId: alice.id, now: "t0" });
+    await repo.create(A, { id: conversationId("22222222-2222-2222-2222-222222222222"), contactId: bob.id, now: "t0" });
+
+    const byName = await repo.search(A, { search: "alice" }, { page: 1, pageSize: 10 });
+    expect(byName.items.map((c) => c.contactId)).toEqual([alice.id]);
+    expect(byName.total).toBe(1);
+
+    const byPhone = await repo.search(A, { search: "2222" }, { page: 1, pageSize: 10 });
+    expect(byPhone.items.map((c) => c.contactId)).toEqual([bob.id]);
+  });
+
+  it("paginates page/pageSize with a real total, newest-last_message_at-first", async () => {
+    for (let i = 0; i < 25; i++) {
+      const c = await repo.create(A, { id: conversationId(`conv-${i}`), contactId: contact(`c-${i}`), now: "t0" });
+      await repo.save(A, recordInboundMessage(c, `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`));
+    }
+
+    const page1 = await repo.search(A, {}, { page: 1, pageSize: 10 });
+    expect(page1.items).toHaveLength(10);
+    expect(page1.total).toBe(25);
+    expect(page1.items[0]?.contactId).toBe("c-24");
+
+    const page3 = await repo.search(A, {}, { page: 3, pageSize: 10 });
+    expect(page3.items).toHaveLength(5);
+    expect(page3.total).toBe(25);
+  });
+
+  it("TENANT ISOLATION — account B's search never sees account A's conversations", async () => {
+    await repo.create(A, { id: conversationId("11111111-1111-1111-1111-111111111111"), contactId: contact("c-1"), now: "t0" });
+
+    const result = await repo.search(B, {}, { page: 1, pageSize: 10 });
+    expect(result.items).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+});
+
+describe("search() — D1 rows-read cost (the bug this task fixes)", () => {
+  it("listing page 1 of 20 over 400 conversations reads a bounded number of rows, not the whole table", async () => {
+    for (let i = 0; i < 400; i++) {
+      await repo.create(A, { id: conversationId(`conv-${i}`), contactId: contact(`c-${i}`), now: "t0" });
+    }
+
+    const counting = new RowCountingDatabaseProvider(db);
+    const costRepo = new SqlConversationRepository(counting);
+
+    const page = await costRepo.search(A, {}, { page: 1, pageSize: 20 });
+
+    expect(page.items).toHaveLength(20);
+    expect(page.total).toBe(400);
+    // One COUNT(*) row + 20 page rows = 21. The pre-fix route walked the
+    // ENTIRE keyset result (400+ rows) to compute this same page; this
+    // assertion is what fails against that code path and passes against
+    // the direct SQL COUNT(*)/LIMIT/OFFSET read.
+    expect(counting.totalRowsReturned).toBeLessThan(60);
+  });
+
+  it("filtering by search still reads a bounded number of rows, never a full contacts scan", async () => {
+    const contacts = new SqlContactRepository(db);
+    const phone = (p: string) => p as unknown as PhoneNumber;
+    for (let i = 0; i < 300; i++) {
+      const c = await contacts.create(A, {
+        phoneNumber: phone(`+1555000${String(i).padStart(4, "0")}`),
+        displayName: i === 42 ? "Needle Contact" : `Contact ${i}`,
+        email: null,
+        company: null,
+      });
+      await repo.create(A, { id: conversationId(`conv-${i}`), contactId: c.id, now: "t0" });
+    }
+
+    const counting = new RowCountingDatabaseProvider(db);
+    const costRepo = new SqlConversationRepository(counting);
+
+    const page = await costRepo.search(A, { search: "needle" }, { page: 1, pageSize: 20 });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.total).toBe(1);
+    expect(counting.totalRowsReturned).toBeLessThan(60);
   });
 });

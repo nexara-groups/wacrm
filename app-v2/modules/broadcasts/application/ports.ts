@@ -69,10 +69,33 @@ export interface NewBroadcastInput {
   readonly scheduledAt: ISODateString | null;
 }
 
+/** Filters for the page/pageSize broadcast list read (`BroadcastRepositoryPort.search`). */
+export interface BroadcastSearchFilter {
+  readonly status?: BroadcastStatus;
+  /** Matches `name`, case-insensitively. */
+  readonly search?: string;
+}
+
+export interface BroadcastSearchPage {
+  readonly items: readonly BroadcastRecord[];
+  /** Real `COUNT(*)` over the filtered set — not the length of an in-memory walk. */
+  readonly total: number;
+}
+
 export interface BroadcastRepositoryPort {
   create(input: NewBroadcastInput): Promise<BroadcastRecord>;
   getById(accountId: AccountId, broadcastId: BroadcastId): Promise<BroadcastRecord | null>;
   listForAccount(accountId: AccountId, cursor: string | null, limit: number): Promise<Page<BroadcastRecord>>;
+  /**
+   * page/pageSize + total read for `GET /api/broadcasts` — status/search
+   * filtering and `COUNT(*)` done in SQL, so the route never walks
+   * `listForAccount`'s cursor to the end to bridge page/cursor semantics.
+   */
+  search(
+    accountId: AccountId,
+    filter: BroadcastSearchFilter,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<BroadcastSearchPage>;
   updateStatus(accountId: AccountId, broadcastId: BroadcastId, status: BroadcastStatus): Promise<void>;
   setScheduledAt(accountId: AccountId, broadcastId: BroadcastId, scheduledAt: ISODateString | null): Promise<void>;
   /** `pausedAt: null` resumes. `reason` is ignored/cleared when `pausedAt` is `null`. */

@@ -1,28 +1,29 @@
 /**
- * `GET /api/conversations/unread-totals` — feeds the inbox's total-unread
- * badge.
+ * `GET /api/conversations/unread-totals` — the unread badge data.
  *
- * `totalUnread` uses `ConversationRepository.countUnreadConversations`
- * directly — the port's own doc says this mirrors the legacy
- * `useTotalUnread` definition (conversations WITH unread mail, not a sum of
- * individual unread messages) and is backed by an index, so it is exact and
- * cheap, no walk needed.
+ * `totalUnread` is a single `COUNT(*)` via
+ * `ConversationRepository.countUnreadConversations`, backed by the
+ * `(account_id, unread_count)` index.
  *
- * `byConversation` has no equivalent dedicated port method (there is no
- * "list only conversations with unread_count > 0" filter on
- * `ConversationFilter`), so it walks the full keyset-paginated `list()`
- * result the same way `/api/conversations` does and keeps only the
- * unread ones. Same scale reasoning as that route's header comment: bounded
- * by conversation count for this tenant, not a real gap at this size.
+ * `byConversation` is a BOUNDED page of unread conversations, not all of
+ * them. This route used to walk the entire keyset result in 200-row chunks
+ * and filter in memory, which meant the badge on every inbox load cost one
+ * row read per conversation in the account — on D1's free tier, where rows
+ * read are metered, that made the cheapest UI element the most expensive
+ * query, and it grew with the customer's history rather than their traffic.
+ *
+ * The cap is a deliberate product call, not a shortcut: per-conversation
+ * unread counts exist to decorate rows the user can actually see, and
+ * nobody reads a list of ten thousand badges. `totalUnread` stays exact —
+ * it comes from the COUNT, not from this array's length — so the headline
+ * number is never capped even when the detail is.
  */
 import { NextResponse, type NextRequest } from "next/server";
-import type { ConversationListPage } from "@modules/conversations/application/ports";
-import type { ConversationRecord } from "@modules/conversations/domain/conversation";
-import type { SequenceCursor } from "@modules/conversations/domain/incremental-sync";
 import { getContainer } from "@/lib/container";
 import { internalError, ok } from "@/lib/api-response";
 
-const WALK_CHUNK = 200;
+/** Enough to decorate any plausible inbox page; far below a full-table read. */
+const MAX_BADGES = 200;
 
 export async function GET(_request: NextRequest): Promise<NextResponse> {
   try {
@@ -30,23 +31,19 @@ export async function GET(_request: NextRequest): Promise<NextResponse> {
 
     const totalUnread = await repositories.conversations.countUnreadConversations(tenant);
 
-    const all: ConversationRecord[] = [];
-    let cursor: SequenceCursor | undefined;
-    do {
-      const page: ConversationListPage = await repositories.conversations.list(
-        tenant,
-        {},
-        { limit: WALK_CHUNK, ...(cursor !== undefined ? { before: cursor } : {}) },
-      );
-      all.push(...page.items);
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor !== undefined);
+    const unread = await repositories.conversations.search(
+      tenant,
+      { unreadOnly: true },
+      { page: 1, pageSize: MAX_BADGES },
+    );
 
-    const byConversation = all
-      .filter((c) => c.unreadCount > 0)
-      .map((c) => ({ conversationId: c.id, unreadCount: c.unreadCount }));
-
-    return ok({ totalUnread, byConversation });
+    return ok({
+      totalUnread,
+      byConversation: unread.items.map((c) => ({
+        conversationId: c.id,
+        unreadCount: c.unreadCount,
+      })),
+    });
   } catch (error) {
     return internalError(error);
   }

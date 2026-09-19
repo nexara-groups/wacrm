@@ -43,6 +43,29 @@ export interface ConversationListPage {
   readonly nextCursor: SequenceCursor | null;
 }
 
+/**
+ * Filters for the page/pageSize inbox read (`ConversationRepository.search`)
+ * — a superset of `ConversationFilter` adding the two predicates the wire
+ * contract (`listConversationsQuerySchema`) asks for that the keyset `list`
+ * does not support: `unreadOnly` and `search` (against the linked contact's
+ * name/phone, resolved in SQL — never a full contacts table load).
+ */
+export interface ConversationSearchFilter {
+  readonly status?: ConversationStatus;
+  /** `undefined` = no filter, `null` = only unassigned, a UserId = only that assignee. */
+  readonly assignedUserId?: string | null;
+  /** `true` = only conversations with `unreadCount > 0`. */
+  readonly unreadOnly?: boolean;
+  /** Matches the linked contact's display name or phone number, case-insensitively. */
+  readonly search?: string;
+}
+
+export interface ConversationSearchPage {
+  readonly items: readonly ConversationRecord[];
+  /** Real `COUNT(*)` over the filtered set — not the length of an in-memory walk. */
+  readonly total: number;
+}
+
 export interface ConversationRepository {
   findById(tenant: TenantContext, id: ConversationId): Promise<ConversationRecord | null>;
 
@@ -71,6 +94,21 @@ export interface ConversationRepository {
 
   /** Persists a full replacement of the row (the service always hands back a whole `ConversationRecord` computed by the pure `domain/conversation.ts` functions). */
   save(tenant: TenantContext, conversation: ConversationRecord): Promise<ConversationRecord>;
+
+  /**
+   * page/pageSize + total read for the inbox LIST endpoint
+   * (`GET /api/conversations`) — filters status, assignedUserId (including
+   * an explicit "unassigned"), unreadOnly and search ALL IN SQL and returns
+   * a real `COUNT(*)`, so the route never walks the full keyset-paginated
+   * `list()` result to bridge page/cursor semantics. `list()` above stays
+   * for callers that genuinely want keyset pagination (incremental screens);
+   * this is the one for "give me page N of M, filtered."
+   */
+  search(
+    tenant: TenantContext,
+    filter: ConversationSearchFilter,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<ConversationSearchPage>;
 
   /**
    * Count of conversations with `unread_count > 0` for this tenant — the
@@ -107,6 +145,12 @@ export interface ThreadPage {
   readonly nextCursor: SequenceCursor | null;
 }
 
+export interface ThreadSearchPage {
+  readonly items: readonly MessageRecord[];
+  /** Real `COUNT(*)` of the conversation's messages — not the length of an in-memory walk. */
+  readonly total: number;
+}
+
 export interface MessageRepository {
   /**
    * Inserts a new message. Idempotent on `(account_id, wamid)`: if
@@ -132,6 +176,18 @@ export interface MessageRepository {
     conversationId: ConversationId,
     opts: { readonly limit: number; readonly before?: SequenceCursor },
   ): Promise<ThreadPage>;
+
+  /**
+   * page/pageSize + total read for `GET /api/conversations/[id]/messages` —
+   * `COUNT(*)` + `LIMIT`/`OFFSET` in SQL, newest-first (matching
+   * `listThread`'s ordering), so the route never walks the whole thread to
+   * bridge page/cursor semantics.
+   */
+  listThreadPage(
+    tenant: TenantContext,
+    conversationId: ConversationId,
+    page: { readonly page: number; readonly pageSize: number },
+  ): Promise<ThreadSearchPage>;
 
   /** Incremental-sync read — everything changed after `cursor`, oldest-first, capped at `limit`. */
   listChangedSince(

@@ -15,11 +15,17 @@ import { Badge } from "@/components/ui/badge";
 import { ConversationList, type AssignedFilter } from "@/components/inbox/conversation-list";
 import { ThreadView } from "@/components/inbox/thread-view";
 
-// Generous relative to the seed data (a handful of conversations): keeps the
-// "assigned/unassigned/all" toggle — which, per /api/conversations's header
-// comment, cannot be expressed as a validated server-side filter — correct
-// when applied CLIENT-SIDE over one fetched page, without also having to
-// reconcile client-side filtering against server-side pagination.
+// `/api/conversations` now filters `unreadOnly`, `search` AND `assignedUserId`
+// (including the contract's `"unassigned"` literal) server-side — see that
+// route and `ConversationRepository.search`. The "assigned to anyone" leg of
+// this screen's three-way toggle has no server-side equivalent: the wire
+// contract's `assignedUserFilterSchema` can only express "a specific user"
+// or `"unassigned"`, not "assigned to somebody, don't care who" — so that one
+// case still filters CLIENT-SIDE over the fetched page below. A page this
+// size can therefore still silently hide older "assigned" conversations past
+// `CONVERSATIONS_PAGE_SIZE` for an account with many of them; a full fix
+// needs either a contract change or a "load more" control, both out of
+// scope for this pass.
 const CONVERSATIONS_PAGE_SIZE = 50;
 const THREAD_PAGE_SIZE = 20;
 
@@ -64,28 +70,35 @@ export function InboxView({
 
   const conversationsSeq = useRef(0);
 
-  const loadConversations = useCallback((nextSearch: string, nextUnreadOnly: boolean) => {
-    const seq = ++conversationsSeq.current;
-    setConversationsLoading(true);
-    setConversationsError(null);
-    const params = new URLSearchParams({ page: "1", pageSize: String(CONVERSATIONS_PAGE_SIZE) });
-    if (nextUnreadOnly) params.set("unreadOnly", "true");
-    if (nextSearch.trim().length > 0) params.set("search", nextSearch.trim());
-    fetch(`/api/conversations?${params.toString()}`)
-      .then((res) => parseOrThrow<ListConversationsResponse>(res))
-      .then((body) => {
-        if (seq !== conversationsSeq.current) return;
-        setConversations(body.items);
-      })
-      .catch((err: unknown) => {
-        if (seq !== conversationsSeq.current) return;
-        setConversationsError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (seq !== conversationsSeq.current) return;
-        setConversationsLoading(false);
-      });
-  }, []);
+  const loadConversations = useCallback(
+    (nextSearch: string, nextUnreadOnly: boolean, nextAssignedFilter: AssignedFilter) => {
+      const seq = ++conversationsSeq.current;
+      setConversationsLoading(true);
+      setConversationsError(null);
+      const params = new URLSearchParams({ page: "1", pageSize: String(CONVERSATIONS_PAGE_SIZE) });
+      if (nextUnreadOnly) params.set("unreadOnly", "true");
+      if (nextSearch.trim().length > 0) params.set("search", nextSearch.trim());
+      // "assigned" (to anyone) has no server-side equivalent — see this
+      // file's header — so only "unassigned" is forwarded; the "assigned"
+      // leg stays a client-side filter over the fetched page below.
+      if (nextAssignedFilter === "unassigned") params.set("assignedUserId", "unassigned");
+      fetch(`/api/conversations?${params.toString()}`)
+        .then((res) => parseOrThrow<ListConversationsResponse>(res))
+        .then((body) => {
+          if (seq !== conversationsSeq.current) return;
+          setConversations(body.items);
+        })
+        .catch((err: unknown) => {
+          if (seq !== conversationsSeq.current) return;
+          setConversationsError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (seq !== conversationsSeq.current) return;
+          setConversationsLoading(false);
+        });
+    },
+    [],
+  );
 
   const loadUnreadTotals = useCallback(() => {
     fetch("/api/conversations/unread-totals")
@@ -98,22 +111,26 @@ export function InboxView({
 
   // Initial load.
   useEffect(() => {
-    loadConversations("", false);
+    loadConversations("", false, "all");
     loadUnreadTotals();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounced reload on search/unreadOnly change.
+  // Debounced reload on search/unreadOnly/assignedFilter change — all three
+  // are now forwarded to the server ("assignedFilter" as far as the
+  // "unassigned" case the contract can express; see `loadConversations`).
   useEffect(() => {
     const handle = setTimeout(() => {
-      loadConversations(search, unreadOnly);
+      loadConversations(search, unreadOnly, assignedFilter);
     }, 300);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, unreadOnly]);
+  }, [search, unreadOnly, assignedFilter]);
 
+  // Only the "assigned to anyone" leg still needs a client-side pass — the
+  // server already excludes non-matching rows for "unassigned" (and does
+  // nothing extra for "all").
   const visibleConversations = useMemo(() => {
-    if (assignedFilter === "unassigned") return conversations.filter((c) => c.assignedUserId === null);
     if (assignedFilter === "assigned") return conversations.filter((c) => c.assignedUserId !== null);
     return conversations;
   }, [conversations, assignedFilter]);

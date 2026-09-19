@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provider";
+import { RowCountingDatabaseProvider } from "../../../db/sqlite/row-counting-database-provider";
 import { runMigrations } from "../../../db/sqlite/run-migrations";
 import { SqlConversationRepository } from "./conversation-repository";
 import { SqlMessageRepository } from "./message-repository";
@@ -209,5 +210,54 @@ describe("SqlMessageRepository", () => {
     });
     expect(action.actionType).toBe("status_changed");
     expect(action.metadata).toEqual({ from: "sent", to: "delivered" });
+  });
+
+  it("listThreadPage() paginates page/pageSize with a real total, no skipped or duplicated messages", async () => {
+    for (let i = 0; i < 25; i++) {
+      await messages.insert(
+        A,
+        inbound({ id: messageId(`m-${i}`), occurredAt: `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`, body: `body-${i}` }),
+      );
+    }
+
+    const page1 = await messages.listThreadPage(A, convA, { page: 1, pageSize: 10 });
+    expect(page1.items).toHaveLength(10);
+    expect(page1.total).toBe(25);
+    expect(page1.items[0]?.body).toBe("body-24");
+
+    const page3 = await messages.listThreadPage(A, convA, { page: 3, pageSize: 10 });
+    expect(page3.items).toHaveLength(5);
+    expect(page3.total).toBe(25);
+
+    const seen = new Set([
+      ...page1.items.map((m) => m.id),
+      ...(await messages.listThreadPage(A, convA, { page: 2, pageSize: 10 })).items.map((m) => m.id),
+      ...page3.items.map((m) => m.id),
+    ]);
+    expect(seen.size).toBe(25);
+  });
+
+  it("TENANT ISOLATION — account B's listThreadPage never sees account A's messages", async () => {
+    await messages.insert(A, inbound({ id: messageId("m-1") }));
+    const result = await messages.listThreadPage(B, convA, { page: 1, pageSize: 10 });
+    expect(result.items).toHaveLength(0);
+    expect(result.total).toBe(0);
+  });
+
+  it("D1 rows-read cost: listThreadPage reads a bounded number of rows over a long thread, not the whole thread", async () => {
+    for (let i = 0; i < 400; i++) {
+      await messages.insert(A, inbound({ id: messageId(`m-${i}`), occurredAt: `2026-01-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`, body: `body-${i}` }));
+    }
+
+    const counting = new RowCountingDatabaseProvider(db);
+    const costRepo = new SqlMessageRepository(counting);
+
+    const page = await costRepo.listThreadPage(A, convA, { page: 1, pageSize: 20 });
+
+    expect(page.items).toHaveLength(20);
+    expect(page.total).toBe(400);
+    // One COUNT(*) row + 20 page rows = 21. The pre-fix route walked the
+    // ENTIRE keyset-paginated thread (400+ rows) to compute this same page.
+    expect(counting.totalRowsReturned).toBeLessThan(60);
   });
 });
