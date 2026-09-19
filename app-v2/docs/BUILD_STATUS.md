@@ -25,22 +25,17 @@ fails without the code — not "the report said so".
 | WhatsApp outbound | text send only |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
-| Retention | 60-day policy, migration, and the SQL sweep. No scheduler calls it yet. |
+| Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
 
 ## Next, in order
 
-1. **A scheduler for the retention sweep.** `sweepExpiredMessages` exists,
-   is tested, and nothing calls it — so nothing is deleted yet. Needs a Workers
-   Cron Trigger that walks tenants and calls it until `more` is false. Note the
-   free tier's write metering: the sweep's ceiling is 1000 deletes per call for
-   that reason, so a backlog drains over several runs by design.
-2. **Email delivery** — nothing sends mail. Invitations issue a real token that
+1. **Email delivery** — nothing sends mail. Invitations issue a real token that
    cannot reach the invitee, and signup marks the owner verified because
    refusing unverified logins would otherwise lock them out of the account they
    just created. Both are disclosed in code, neither is fixed.
-3. **Remaining send routes** — template, media, interactive. The service layer
+2. **Remaining send routes** — template, media, interactive. The service layer
    handles all of them; only text has a route.
-4. **~20 unported screens** — dashboard, settings, templates, automations,
+3. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 

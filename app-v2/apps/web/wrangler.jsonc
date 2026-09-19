@@ -1,8 +1,22 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	// Built by `opennextjs-cloudflare build` (see package.json's "cf:build").
-	"main": ".open-next/worker.js",
+	// `.open-next/worker.js` is BUILT by `opennextjs-cloudflare build` (see
+	// package.json's "cf:build") and regenerated on every build — it only
+	// exports `fetch` plus the Durable Object classes, with nowhere to add a
+	// Cron Trigger handler. `cf-entry.ts` is committed source, not build
+	// output: it imports the generated worker, re-exports its `fetch` and
+	// every Durable Object export unchanged, and adds `scheduled()` for the
+	// retention-sweep cron below. See `cf-entry.ts`'s own header for the
+	// full reasoning (including why the import needs a `paths` alias) and
+	// `apps/web/lib/retention-sweep.ts` for the sweep itself.
+	"main": "cf-entry.ts",
 	"name": "wacrm-web",
+	// Nightly message-retention sweep (apps/web/lib/retention-sweep.ts).
+	// 09:00 UTC, once a day — see `cf-entry.ts`'s `scheduled()` doc comment
+	// for why that time and that frequency.
+	"triggers": {
+		"crons": ["0 9 * * *"]
+	},
 	// Picked on the day this config was written. Cloudflare rejects a
 	// compatibility_date it does not yet recognise, so if this has gone
 	// stale by the time you deploy, bump it to today's date (or run

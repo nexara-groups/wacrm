@@ -215,3 +215,31 @@ export interface SignupRepository {
    */
   createTenant(input: CreateTenantInput): Promise<CreateTenantResult>;
 }
+
+// ---------------------------------------------------------------------------
+// Account directory — the one place the platform enumerates EVERY tenant.
+// No `TenantContext` parameter, same as `SignupRepository`: there is no
+// single tenant to scope this to, by design. Exists for jobs that must walk
+// every account (today: the nightly message-retention sweep,
+// apps/web/lib/retention-sweep.ts) without ever loading them all at once —
+// see `listAccountIds`'s own doc for the paging contract.
+// ---------------------------------------------------------------------------
+
+export interface AccountIdPage {
+  readonly accountIds: readonly string[];
+  /** Pass back as `cursor` to fetch the next page. `null` at the end. */
+  readonly nextCursor: string | null;
+}
+
+export interface AccountDirectory {
+  /**
+   * One page of `accounts.id`, ordered by `id` ascending, keyset-paginated
+   * (never `OFFSET`, never a full-table load). `cursor` is the previous
+   * page's `nextCursor`; `null`/omitted starts from the beginning.
+   *
+   * Row reads are metered same as writes, so `limit` bounds this exactly
+   * like `sweepExpiredMessages`'s `maxDeletes` bounds a sweep — a caller
+   * walking the whole fleet does it one bounded page at a time.
+   */
+  listAccountIds(cursor: string | null, limit: number): Promise<AccountIdPage>;
+}

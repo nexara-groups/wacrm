@@ -49,6 +49,10 @@ describe("every wired repository reaches the real schema", () => {
     // when the whatsapp module's ports are next touched.
     await expect(r.whatsappConfig.listByAccount("acct-probe" as never)).resolves.toEqual([]);
     await expect(r.onboarding.findCurrentForAccount(tenant)).resolves.toBeNull();
+    await expect(r.accountDirectory.listAccountIds(null, 1)).resolves.toEqual({
+      accountIds: [],
+      nextCursor: null,
+    });
 
     const platformPrincipal = { userId: "probe-staff", tenantId: "n/a", email: "staff@test", platformRole: "platform_support" } as never;
     await expect(r.complianceCases.findActiveForAccount(platformPrincipal, "acct-probe")).resolves.toEqual([]);
@@ -65,7 +69,7 @@ describe("every wired repository reaches the real schema", () => {
     const keys = Object.keys(buildModuleRepositories(db)).sort();
     expect(keys).toEqual(
       [
-        "broadcastRecipients", "broadcasts", "complianceCases", "contactState", "contacts",
+        "accountDirectory", "broadcastRecipients", "broadcasts", "complianceCases", "contactState", "contacts",
         "conversations", "deviceInstallations", "emailTokens", "impersonation", "messageTemplates",
         "messages", "onboarding", "platformAuditLog", "platformRoleGrants", "refreshTokens",
         "seats", "sessions", "signup", "users", "webhookEvents", "whatsappConfig",

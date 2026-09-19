@@ -18,7 +18,22 @@
       "@nexara/*": ["../../nexara/*"],
       "@modules/*": ["../../modules/*"],
       "@packages/*": ["../../packages/*"],
-      "@shared/*": ["../../nexara/shared/*"]
+      "@shared/*": ["../../nexara/shared/*"],
+      // The OpenNext/Cloudflare adapter GENERATES `.open-next/worker.js` on
+      // every `cf:build` — it does not exist in a fresh checkout or right
+      // after `git clean`. `cf-entry.ts` (this app's wrangler `main`) needs
+      // to import it, but a plain relative import
+      // (`import w from "./.open-next/worker.js"`) has no ambient-module
+      // escape hatch: TypeScript rejects a `declare module` whose name is a
+      // relative path (TS2436) outright, build or no build. Routing the
+      // import through this NON-relative alias instead is what lets
+      // `cf-entry.d.ts` (in this same directory) declare a real ambient
+      // module for it — verified locally: `tsc --noEmit` is clean both
+      // before the generated file exists and after, and `wrangler`
+      // (esbuild, which understands tsconfig `paths` natively) still
+      // resolves the alias to the real generated file when bundling for
+      // deploy. See `cf-entry.ts`'s own header for the full picture.
+      "cf-open-next-worker": ["./.open-next/worker.js"]
     }
   },
   "include": [
