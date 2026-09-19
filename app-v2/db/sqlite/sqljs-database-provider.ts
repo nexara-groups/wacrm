@@ -97,7 +97,18 @@ export class SqlJsDatabaseProvider extends SqlJsQueryable implements AtomicBatch
 
   static async create(): Promise<SqlJsDatabaseProvider> {
     const SQL = await loadSqlJs();
-    return new SqlJsDatabaseProvider(new SQL.Database());
+    const db = new SQL.Database();
+    // SQLite ships with foreign-key enforcement OFF. D1 has it ON. Left at
+    // the default, this harness silently permits writes that production
+    // rejects — verified: deleting a message that a surviving message's
+    // `reply_to` points at succeeds here and fails on D1 with "FOREIGN KEY
+    // constraint failed". Every test would have passed.
+    //
+    // Matching D1 is the whole point of running the real migration stream
+    // against sql.js, so the pragma belongs here rather than in the tests
+    // that happen to care.
+    db.run("PRAGMA foreign_keys = ON;");
+    return new SqlJsDatabaseProvider(db);
   }
 
   /**
