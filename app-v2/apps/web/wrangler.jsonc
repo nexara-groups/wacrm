@@ -1,0 +1,41 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// Built by `opennextjs-cloudflare build` (see package.json's "cf:build").
+	"main": ".open-next/worker.js",
+	"name": "wacrm-web",
+	// Picked on the day this config was written. Cloudflare rejects a
+	// compatibility_date it does not yet recognise, so if this has gone
+	// stale by the time you deploy, bump it to today's date (or run
+	// `npx wrangler deploy` once and follow the error, which names the
+	// latest valid date) — see docs/cloudflare-deploy.md.
+	"compatibility_date": "2026-09-19",
+	// nodejs_compat: required for node:crypto (createHmac/timingSafeEqual in
+	// lib/webhook-signature.ts, jose's internals) and Buffer — verified
+	// working under workerd locally (see docs/cloudflare-deploy.md).
+	// global_fetch_strictly_public: refuses fetch() to private/internal
+	// addresses from within the Worker — the outbound Meta Graph API calls
+	// (modules/whatsapp/infrastructure/meta-whatsapp-provider.ts) only ever
+	// target a public host, so this costs nothing and closes off
+	// server-side-request-forgery via a compromised or misconfigured target.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	},
+	// The ONE binding this app's code reads: `env.DB` in
+	// lib/container.ts's `buildD1BaseServices`. `database_name` and
+	// `database_id` are placeholders — a human fills these in after running
+	// `wrangler d1 create` (see docs/cloudflare-deploy.md, which has the
+	// exact commands). `migrations_dir` points at the real migration
+	// stream (db/migrations/d1/*.sql) rather than a copy — do not add a
+	// `migrations` folder under this directory; there is nothing to
+	// duplicate.
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "REPLACE_WITH_YOUR_D1_DATABASE_NAME",
+			"database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+			"migrations_dir": "../../db/migrations/d1"
+		}
+	]
+}

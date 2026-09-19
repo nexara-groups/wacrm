@@ -51,6 +51,10 @@ import { SqlJsDatabaseProvider } from "../../../db/sqlite/sqljs-database-provide
 // longer uses the `new URL(..., import.meta.url)` form that Turbopack
 // special-cases, so it bundles cleanly now.
 import { runMigrations } from "../../../db/sqlite/run-migrations";
+import {
+  D1DatabaseProvider,
+  type D1DatabaseBinding,
+} from "@nexara/core/database/providers/d1-database-provider";
 import { buildModuleRepositories, type ModuleRepositories } from "@modules/container";
 import { JwtAuthProvider } from "@nexara/core/auth/providers/jwt-auth-provider";
 import { SqlCredentialsRepository } from "@nexara/infrastructure";
@@ -109,8 +113,15 @@ export interface BaseServices {
   readonly repositories: ModuleRepositories;
   readonly credentialsRepository: CredentialsRepository;
   readonly authProvider: CredentialsAuthProvider;
-  readonly demoAccountId: TenantId;
-  readonly demoOwnerUserId: string;
+  /**
+   * The seeded demo account/owner, present only in the dev/test sql.js
+   * harness (see `isWorkersRuntime` below). On a real D1 deployment nothing
+   * is seeded — every existing consumer resolves its tenant from the
+   * session's JWT (`lib/session.ts`), never from these fields — so they are
+   * `null` there rather than a fabricated id nothing should ever read.
+   */
+  readonly demoAccountId: TenantId | null;
+  readonly demoOwnerUserId: string | null;
 }
 
 export interface AppContainer {
@@ -119,7 +130,103 @@ export interface AppContainer {
   readonly ownerUserId: string;
 }
 
-async function build(): Promise<BaseServices> {
+/**
+ * Structural Workers/Node split — NOT an env var, NOT a try/catch fallback.
+ *
+ * `navigator.userAgent === "Cloudflare-Workers"` is the runtime's own
+ * self-identification (set by workerd itself, both under `wrangler dev` and
+ * in a real deployment) and the detection method Cloudflare documents for
+ * this exact purpose. Node (`next dev`, `vitest run`, `next build`) has no
+ * `navigator` global before Node 21, and where it exists (Node 21+) its
+ * `userAgent` is `"Node.js/<version>"` — never this string — so the two
+ * environments can never be confused for one another.
+ *
+ * This is the ONLY switch between the two `BaseServices` builders below.
+ * Nothing here inspects `NODE_ENV` or a feature flag: which storage engine
+ * runs is a property of which JavaScript runtime the process IS, not a
+ * setting that could be misconfigured to seed demo data into production D1.
+ */
+function isWorkersRuntime(): boolean {
+  return typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers";
+}
+
+/**
+ * Reads a required Workers binding/var from `process.env`.
+ *
+ * OpenNext's worker entrypoint copies every string value off the Workers
+ * `env` object onto `process.env` before any request is handled (see
+ * `@opennextjs/cloudflare`'s `populateProcessEnv`), so plain `process.env`
+ * reads are correct here, on the same terms `resolveAuthSecret` already
+ * relies on for `AUTH_SECRET`. Fails closed — no default, ever.
+ */
+function requireWorkersEnv(name: string, why: string): string {
+  const value = process.env[name];
+  if (value !== undefined && value.length > 0) return value;
+  throw new Error(`${name} is not set. ${why}`);
+}
+
+/**
+ * Production path: Cloudflare Workers + D1, no seeding.
+ *
+ * `getCloudflareContext` (from `@opennextjs/cloudflare`) reads the `DB`
+ * binding off the current request's Workers `env`. It is only ever called
+ * from here, and only once per process: D1 bindings are fixed per Worker
+ * deployment (not per-request), so caching the resulting provider on
+ * `globalThis` (via `getBaseServices` below) for the isolate's lifetime is
+ * correct, not a shortcut.
+ *
+ * There is deliberately no `runMigrations` call and no `SEEDERS` loop here.
+ * `runMigrations` reads `.sql` files off disk (`node:fs`) — Workers has no
+ * filesystem, and in any case migrations belong to `wrangler d1 migrations
+ * apply`, run once by a human against the real database, never by app code
+ * on a cold start (see `docs/cloudflare-deploy.md`).
+ *
+ * `AUTH_TENANT_ID` is a NEW requirement this path introduces — see that
+ * file's "single-tenant auth" note for why `JwtAuthProvider` needs a fixed
+ * tenant id at construction time and cannot be seeded around it here.
+ */
+async function buildD1BaseServices(): Promise<BaseServices> {
+  const { getCloudflareContext } = await import("@opennextjs/cloudflare");
+  const { env } = await getCloudflareContext({ async: true });
+  const binding = (env as Record<string, unknown>).DB as D1DatabaseBinding | undefined;
+  if (!binding) {
+    throw new Error(
+      "Missing required D1 binding: DB. Add a [[d1_databases]] entry named \"DB\" to wrangler.toml " +
+        "(see docs/cloudflare-deploy.md).",
+    );
+  }
+
+  const database = new D1DatabaseProvider({ db: binding });
+  const repositories = buildModuleRepositories(database);
+  const credentialsRepository = new SqlCredentialsRepository(database);
+
+  const tenantId = requireWorkersEnv(
+    "AUTH_TENANT_ID",
+    "This deployment cannot verify any session without knowing which tenant it serves — " +
+      "set it to the account id already provisioned in this D1 database.",
+  );
+
+  const authProvider = new JwtAuthProvider(
+    { secret: AUTH_SECRET, tenantId, issuer: AUTH_ISSUER, audience: AUTH_AUDIENCE },
+    credentialsRepository,
+    new PermissionService(),
+  );
+
+  return {
+    repositories,
+    credentialsRepository,
+    authProvider,
+    demoAccountId: null,
+    demoOwnerUserId: null,
+  };
+}
+
+/**
+ * Dev/test path: sql.js, in-memory, freshly seeded every process start.
+ * Unchanged from before this file grew a D1 branch — this is exactly what
+ * ran here previously, just renamed so `build()` can dispatch to it.
+ */
+async function buildDevBaseServices(): Promise<BaseServices> {
   const accountId = randomUUID();
   const ownerId = randomUUID();
   const now = new Date().toISOString();
@@ -179,6 +286,11 @@ async function build(): Promise<BaseServices> {
     demoAccountId: accountId as TenantId,
     demoOwnerUserId: ownerId,
   };
+}
+
+/** Dispatches on the runtime, per `isWorkersRuntime`'s header. */
+function build(): Promise<BaseServices> {
+  return isWorkersRuntime() ? buildD1BaseServices() : buildDevBaseServices();
 }
 
 declare global {

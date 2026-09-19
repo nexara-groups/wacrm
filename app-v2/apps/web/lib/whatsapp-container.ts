@@ -34,8 +34,14 @@ const defaultProvider: WhatsAppProvider = new MetaWhatsAppProvider();
 export interface WhatsAppContainer {
   readonly repositories: ModuleRepositories;
   readonly service: WhatsAppService;
-  /** The one seeded demo account — see this file's header. */
-  readonly demoAccountId: TenantId;
+  /**
+   * The one seeded demo account — see this file's header. `null` on a real
+   * D1 deployment, where nothing is seeded (`lib/container.ts`'s
+   * `buildD1BaseServices`); unused by both callers of this function today
+   * (`resolveTenantByPhoneNumberId` derives the tenant from the stored
+   * config row instead), so this being `null` in production breaks nothing.
+   */
+  readonly demoAccountId: TenantId | null;
 }
 
 /**
