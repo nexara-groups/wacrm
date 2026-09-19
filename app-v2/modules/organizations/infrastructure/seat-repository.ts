@@ -97,12 +97,16 @@ import type { TenantContext } from "@nexara/core/context";
 import { isRole, type Role } from "@nexara/core/rbac";
 import { AppError } from "@shared/errors";
 import { generateToken, hashToken } from "@modules/identity/domain/token-hashing";
+// Reused rather than reimplemented: the same unique-constraint detection the
+// signup path needs, for the same globally-unique credentials.email index.
+import { isDuplicateEmailError } from "./signup-repository";
 import { resolveSeatLimit } from "../domain/seat-limit";
 import { countSeats, type SeatInvitation, type SeatMember } from "../domain/seat-usage";
 import { computeOverSeatLimitStatus } from "../domain/over-seat-limit";
 import type {
   CreateInvitationInput,
   DirectUserCreationInput,
+  AcceptInvitationByTokenResult,
   ReservedInvitation,
   SeatAuditEntry,
   SeatLimitConfig,
@@ -304,6 +308,136 @@ export class SqlSeatRepository implements SeatRepository {
       },
       token: rawToken,
     };
+  }
+
+  async acceptInvitationByToken(
+    rawToken: string,
+    passwordHash: string,
+    now: Date,
+  ): Promise<AcceptInvitationByTokenResult> {
+    const tokenHash = await hashToken(rawToken);
+    const nowValue = now.toISOString();
+
+    const found = await this.db.query<Row>(
+      `-- tenant-scope-exempt: the acceptor holds only an emailed token and has
+       -- no session and no tenant, so this is the query that DETERMINES the
+       -- tenant. Bounded to one row by the UNIQUE index on token_hash;
+       -- everything below scopes by the account_id on the row it returns.
+       select account_id, id, role, label, accepted_at, revoked_at, expires_at
+         from account_invitations where token_hash = $1`,
+      [tokenHash],
+    );
+    const invitationRow = found.rows[0];
+    if (invitationRow === undefined) return { kind: "invalid_or_expired" };
+
+    const accountId = text(invitationRow.account_id);
+    const invitationId = text(invitationRow.id);
+    const role = toRole(invitationRow.role);
+
+    const accepted = invitationRow.accepted_at !== null && invitationRow.accepted_at !== undefined;
+    const revoked = invitationRow.revoked_at !== null && invitationRow.revoked_at !== undefined;
+    const expired = new Date(text(invitationRow.expires_at)).getTime() <= now.getTime();
+    if (accepted || revoked || expired) return { kind: "invalid_or_expired" };
+
+    // `label` holds the invited address, and it is nullable in the schema. An
+    // invitation without one CANNOT produce a usable login: the credential's
+    // email IS the login identity, so inventing an address would hand someone
+    // a consumed seat, a membership and a credential they can never
+    // authenticate with, because nobody knows what address to type. That is
+    // exactly the class of half-finished account this method exists to stop
+    // creating, so refuse and leave the invitation untouched.
+    //
+    // The caller is told `invalid_or_expired`, which is true from their side —
+    // that invitation genuinely cannot be used — while the real reason goes to
+    // the log for whoever has to explain it.
+    const email = nullableText(invitationRow.label);
+    if (email === null) {
+      console.warn(
+        `[seats] invitation ${invitationId} has no recorded email address, so accepting it ` +
+          "would create a credential nobody could log in with; refused",
+      );
+      return { kind: "invalid_or_expired" };
+    }
+
+    const newUserId = crypto.randomUUID();
+    const newMemberId = crypto.randomUUID();
+
+    return this.withTenantLock({ tenantId: accountId } as TenantContext, async () => {
+      try {
+        const results = await this.db.batch([
+          {
+            // The claim. Succeeds (rowCount 1) only if the invitation is still
+            // pending AND a seat is free for one more ACTIVE member right now —
+            // the cap may have been lowered, or another invite accepted, since
+            // this one was sent.
+            sql: `update account_invitations
+                     set accepted_at = $3, accepted_by_user_id = $4
+                   where account_id = $1 and id = $2
+                     and accepted_at is null and revoked_at is null and expires_at > $3
+                     and ${activeMemberCountSubquery("$1")} < ${resolvedSeatLimitSubquery("$1")}`,
+            params: [accountId, invitationId, nowValue, newUserId],
+          },
+          {
+            // Every insert below is gated on the claim having set
+            // accepted_by_user_id to THIS attempt's id, so a losing race
+            // inserts nothing.
+            sql: `insert into users (user_id, tenant_id, email, role, email_verified_at, created_at, updated_at)
+                  select $3, $1, $4, $5, $6, $6, $6
+                   where exists (
+                     select 1 from account_invitations ai
+                      where ai.account_id = $1 and ai.id = $2 and ai.accepted_by_user_id = $3
+                   )`,
+            params: [accountId, invitationId, newUserId, email, role, nowValue],
+          },
+          {
+            sql: `insert into memberships (id, account_id, user_id, role, created_at, deactivated_at)
+                  select $3, $1, $4, $5, $6, null
+                   where exists (
+                     select 1 from account_invitations ai
+                      where ai.account_id = $1 and ai.id = $2 and ai.accepted_by_user_id = $4
+                   )`,
+            params: [accountId, invitationId, newMemberId, newUserId, role, nowValue],
+          },
+          {
+            // THE ROW THAT MAKES THIS USABLE. Without a credential the invitee
+            // holds a seat and a membership and still cannot log in, because
+            // login reads this table. It is in the SAME batch as the claim so
+            // the two cannot come apart: a consumed seat with no way in is
+            // unrecoverable from inside the product.
+            sql: `insert into credentials (user_id, tenant_id, email, password_hash, role, verified_at)
+                  select $3, $1, $4, $5, $6, $7
+                   where exists (
+                     select 1 from account_invitations ai
+                      where ai.account_id = $1 and ai.id = $2 and ai.accepted_by_user_id = $3
+                   )`,
+            params: [accountId, invitationId, newUserId, email, passwordHash, role, nowValue],
+          },
+        ]);
+
+        const claim = results[0];
+        if (claim === undefined || claim.rowCount !== 1) return { kind: "seat_unavailable" };
+
+        return {
+          kind: "accepted",
+          tenantId: accountId,
+          email,
+          member: {
+            id: newMemberId,
+            userId: newUserId,
+            joinedAt: new Date(nowValue),
+            status: "active",
+            role,
+            isPlatformStaff: false,
+          },
+        };
+      } catch (error) {
+        // `credentials.email` is globally unique (0013): the invitee already
+        // has an account elsewhere, which "one account per user" forbids. The
+        // batch rolled back, so nothing was consumed.
+        if (isDuplicateEmailError(error)) return { kind: "email_taken" };
+        throw error;
+      }
+    });
   }
 
   async acceptInvitationIfSeatAvailable(

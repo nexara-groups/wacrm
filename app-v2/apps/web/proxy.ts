@@ -22,7 +22,11 @@ import { NextResponse, type NextRequest } from "next/server";
 /** Keep in sync with `lib/session.ts`'s `SESSION_COOKIE_NAME`. */
 const SESSION_COOKIE_NAME = "wacrm_session";
 
-const PUBLIC_PAGE_PATHS = new Set(["/login", "/signup"]);
+// `/accept-invite` is here for the same reason `/login` and `/signup` are:
+// the person opening it has no session yet — that is the entire point of an
+// invitation link — so gating it behind the cookie check would make the
+// link in the invite email a 401/redirect for its only intended visitor.
+const PUBLIC_PAGE_PATHS = new Set(["/login", "/signup", "/accept-invite"]);
 
 function isPublicApiPath(pathname: string): boolean {
   // Every /api/auth/* route handles its own authenticated/unauthenticated

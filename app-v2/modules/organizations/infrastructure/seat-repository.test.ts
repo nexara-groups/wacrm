@@ -332,6 +332,204 @@ describe("SqlSeatRepository", () => {
     expect(rows[0]?.delta).toBe(1);
   });
 
+  describe("acceptInvitationByToken — the PUBLIC self-serve accept", () => {
+    it("creates the users, memberships AND credentials rows atomically, from the invitation's own email", async () => {
+      const invite = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "newmember@x.test",
+        role: "admin",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      expect(invite).not.toBeNull();
+
+      const result = await repo.acceptInvitationByToken(invite!.token, "fake-hash-1", NOW);
+      expect(result.kind).toBe("accepted");
+      if (result.kind !== "accepted") throw new Error("expected the accept to succeed");
+      expect(result.tenantId).toBe("acct-a");
+      expect(result.email).toBe("newmember@x.test");
+      expect(result.member.role).toBe("admin");
+      expect(result.member.status).toBe("active");
+
+      // The credential — the whole point of this method — exists, under the
+      // INVITATION's email (never anything the caller could have supplied;
+      // this method takes no email parameter at all) and the hash passed
+      // in verbatim (hashing itself is the service layer's job, never this
+      // repository's).
+      const { rows: credRows } = await db.query<{
+        email: string;
+        tenant_id: string;
+        password_hash: string;
+        role: string;
+      }>(`select email, tenant_id, password_hash, role from credentials where user_id = $1`, [
+        result.member.userId,
+      ]);
+      expect(credRows).toHaveLength(1);
+      expect(credRows[0]?.email).toBe("newmember@x.test");
+      expect(credRows[0]?.tenant_id).toBe("acct-a");
+      expect(credRows[0]?.password_hash).toBe("fake-hash-1");
+      expect(credRows[0]?.role).toBe("admin");
+
+      const invitations = await repo.listInvitations(A);
+      expect(invitations.find((i) => i.id === invite!.invitation.id)?.status).toBe("accepted");
+    });
+
+    it("reports an unknown token as invalid_or_expired", async () => {
+      expect(await repo.acceptInvitationByToken("not-a-real-token", "hash", NOW)).toEqual({
+        kind: "invalid_or_expired",
+      });
+    });
+
+    it("reports an expired invitation as invalid_or_expired", async () => {
+      const rawToken = await seedPendingInvitation("acct-a", "inv-expired", {
+        expiresAt: "2020-01-01T00:00:00.000Z",
+      });
+      expect(await repo.acceptInvitationByToken(rawToken, "hash", NOW)).toEqual({ kind: "invalid_or_expired" });
+    });
+
+    it("reports a revoked invitation as invalid_or_expired", async () => {
+      const invite = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "rev@x.test",
+        role: "member",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      await repo.markInvitationExpiredOrRevoked(A, invite!.invitation.id, "revoked");
+      expect(await repo.acceptInvitationByToken(invite!.token, "hash", NOW)).toEqual({
+        kind: "invalid_or_expired",
+      });
+    });
+
+    it("cannot be replayed after it already succeeded once", async () => {
+      const invite = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "replay@x.test",
+        role: "member",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      const first = await repo.acceptInvitationByToken(invite!.token, "hash-1", NOW);
+      expect(first.kind).toBe("accepted");
+
+      const second = await repo.acceptInvitationByToken(invite!.token, "hash-2", NOW);
+      expect(second.kind).not.toBe("accepted");
+
+      const { rows } = await db.query<{ count: number }>(
+        `-- tenant-scope-exempt: test-only assertion that credentials.email is
+         -- globally unique (0013_global_email_uniqueness.sql) — deliberately
+         -- cross-tenant, proving no second row was created ANYWHERE
+         select count(*) as count from credentials where email = $1`,
+        ["replay@x.test"],
+      );
+      expect(Number(rows[0]?.count)).toBe(1);
+    });
+
+    it("ATOMICITY — a duplicate credential email rolls back the whole accept: invitation stays pending, no membership created, no seat consumed", async () => {
+      // Someone in a DIFFERENT tenant already holds a credential at the
+      // address this invitation was sent to — `credentials.email` is
+      // globally unique (0013_global_email_uniqueness.sql), so the
+      // credentials insert below WILL violate it.
+      await db.query(
+        `insert into credentials (user_id, tenant_id, email, password_hash, role, verified_at)
+         values ($1, $2, $3, $4, 'member', null)`,
+        ["existing-user", "acct-b", "collide@x.test", "existing-hash"],
+      );
+
+      const invite = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "collide@x.test",
+        role: "member",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      expect(invite).not.toBeNull();
+      const before = countSeats(await repo.listMembers(A), await repo.listInvitations(A), NOW);
+
+      const result = await repo.acceptInvitationByToken(invite!.token, "new-hash", NOW);
+      expect(result).toEqual({ kind: "email_taken" });
+
+      // The invitation itself: still pending, NOT accepted — the claim
+      // UPDATE was part of the same batch that rolled back.
+      const invitations = await repo.listInvitations(A);
+      expect(invitations.find((i) => i.id === invite!.invitation.id)?.status).toBe("pending");
+
+      // No membership/user was created by the failed attempt — the owner
+      // is still the only member.
+      const members = await repo.listMembers(A);
+      expect(members).toHaveLength(1);
+
+      // Seat accounting is exactly what it was before the attempt (still
+      // reserved by the still-pending invitation, nothing more).
+      const after = countSeats(members, invitations, NOW);
+      expect(after).toBe(before);
+
+      // Exactly the ORIGINAL credential row exists for that address —
+      // nothing extra, nothing half-written.
+      const { rows: credRows } = await db.query<{ tenant_id: string }>(
+        `select tenant_id from credentials where email = $1`,
+        ["collide@x.test"],
+      );
+      expect(credRows).toHaveLength(1);
+      expect(credRows[0]?.tenant_id).toBe("acct-b");
+    });
+
+    it("AT CAP — accepting once active membership already fills the resolved cap fails cleanly and consumes nothing", async () => {
+      // Reserve the invitation FIRST, while a seat is still free (mirrors
+      // "the cap was lowered, or another invite accepted first, since this
+      // one was sent" — SEAT_LIMITS.md §3).
+      const invite = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "capped@x.test",
+        role: "member",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      expect(invite).not.toBeNull();
+
+      // Fill the account to its ACTIVE-member cap via the cap-bypassing
+      // direct-creation path (owner + 2 = 3 = the platform default cap).
+      await repo.createMemberDirectly(A, { email: "direct1@x.test", role: "member" });
+      await repo.createMemberDirectly(A, { email: "direct2@x.test", role: "member" });
+      expect((await repo.listMembers(A)).filter((m) => m.status === "active")).toHaveLength(3);
+
+      const result = await repo.acceptInvitationByToken(invite!.token, "hash", NOW);
+      expect(result).toEqual({ kind: "seat_unavailable" });
+
+      // Nothing was consumed: invitation still pending, member count
+      // unchanged, and no credential was created for the invitee.
+      const invitations = await repo.listInvitations(A);
+      expect(invitations.find((i) => i.id === invite!.invitation.id)?.status).toBe("pending");
+      expect(await repo.listMembers(A)).toHaveLength(3);
+
+      const { rows } = await db.query<{ email: string }>(
+        `-- tenant-scope-exempt: test-only assertion that no credential was
+         -- created anywhere for this address — deliberately cross-tenant
+         select email from credentials where email = $1`,
+        ["capped@x.test"],
+      );
+      expect(rows).toHaveLength(0);
+    });
+
+    it("resolves the tenant from the token itself — no tenant is passed in, and cross-tenant tokens still work", async () => {
+      const inviteA = await repo.reserveSeatAndCreateInvitation(A, {
+        email: "cross-a@x.test",
+        role: "member",
+        invitedBy: "u-acct-a",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+      const inviteB = await repo.reserveSeatAndCreateInvitation(B, {
+        email: "cross-b@x.test",
+        role: "member",
+        invitedBy: "u-acct-b",
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
+      });
+
+      const resultA = await repo.acceptInvitationByToken(inviteA!.token, "hash-a", NOW);
+      const resultB = await repo.acceptInvitationByToken(inviteB!.token, "hash-b", NOW);
+      expect(resultA.kind).toBe("accepted");
+      expect(resultB.kind).toBe("accepted");
+      if (resultA.kind !== "accepted" || resultB.kind !== "accepted") throw new Error("expected both to accept");
+      expect(resultA.tenantId).toBe("acct-a");
+      expect(resultB.tenantId).toBe("acct-b");
+    });
+  });
+
   describe("TENANT ISOLATION — both directions, every method", () => {
     it("listMembers / listInvitations never cross accounts", async () => {
       await repo.createMemberDirectly(A, { email: "a2@x.test", role: "member" });

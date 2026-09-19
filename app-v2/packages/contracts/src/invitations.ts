@@ -97,6 +97,35 @@ export const acceptInvitationResponseSchema = apiResult({ member: accountMemberS
 export type AcceptInvitationResponse = z.infer<typeof acceptInvitationResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// Accept — PUBLIC, self-serve variant (`POST /api/auth/accept-invite`). The
+// invitee has no session yet (there is no user to attach one to until this
+// call succeeds), so unlike `acceptInvitationRequestSchema` above there is
+// no authenticated identity to read a token against — the token AND a
+// freshly chosen password are both request input. The email a credential
+// gets created under is never one of these fields: it always comes from the
+// invitation row itself (see `AcceptInvitationByTokenResult` in
+// `modules/organizations/application/ports.ts`), so it has no schema here.
+//
+// Password shape is deliberately loose (`z.string().min(1)`), same
+// reasoning as `signupRequestSchema` in `auth.ts`: the real policy lives in
+// `modules/identity/domain/password-policy.ts`, which this zod-only package
+// may not import. A request that passes this schema can still be refused
+// server-side as `weak_password`.
+// ---------------------------------------------------------------------------
+
+export const acceptInvitationPublicRequestSchema = z.object({
+  token: z.string().min(1),
+  password: z.string().min(1, "Password is required"),
+});
+export type AcceptInvitationPublicRequest = z.infer<typeof acceptInvitationPublicRequestSchema>;
+
+export const acceptInvitationPublicResponseSchema = apiResult({
+  email: z.email(),
+  role: roleSchema,
+});
+export type AcceptInvitationPublicResponse = z.infer<typeof acceptInvitationPublicResponseSchema>;
+
+// ---------------------------------------------------------------------------
 // Revoke
 // ---------------------------------------------------------------------------
 

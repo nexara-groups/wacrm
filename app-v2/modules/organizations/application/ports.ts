@@ -44,6 +44,37 @@ export interface ReservedInvitation {
   readonly token: string;
 }
 
+/**
+ * Outcome of `acceptInvitationByToken`. Unlike `acceptInvitationIfSeatAvailable`
+ * (a public, unauthenticated caller needs to hear a specific, actionable
+ * reason back — "email already taken" is not "try again later"), this is a
+ * discriminated union rather than a bare `null`:
+ *   - `invalid_or_expired`: no invitation matches the token, or the one
+ *     that does is no longer pending (already accepted, revoked, or past
+ *     `expires_at`).
+ *   - `seat_unavailable`: SEAT_LIMITS.md §3's re-check-at-accept-time cap —
+ *     the limit may have been lowered, or another invitation accepted
+ *     first, since this one was sent.
+ *   - `email_taken`: `credentials.email` is globally unique
+ *     (0013_global_email_uniqueness.sql) and the invitee's address already
+ *     has one, elsewhere. Reported, never thrown — same pattern
+ *     `SignupRepository.createTenant` uses for the identical constraint.
+ */
+export type AcceptInvitationByTokenResult =
+  | {
+      readonly kind: "accepted";
+      readonly member: SeatMember;
+      /** The tenant the invitation belonged to — the caller had no way to
+       * know this in advance (that's the whole reason the lookup is
+       * cross-tenant), so it comes back here. */
+      readonly tenantId: string;
+      /** The invitation row's own stored address — never the request's. */
+      readonly email: string;
+    }
+  | { readonly kind: "invalid_or_expired" }
+  | { readonly kind: "seat_unavailable" }
+  | { readonly kind: "email_taken" };
+
 export interface DirectUserCreationInput {
   readonly email: string;
   readonly role: Role;
@@ -124,6 +155,44 @@ export interface SeatRepository {
     rawToken: string,
     now: Date,
   ): Promise<SeatMember | null>;
+
+  /**
+   * §3 "Accept invitation" — the PUBLIC, self-serve variant used by the
+   * `/accept-invite` flow (an emailed link, no session).
+   *
+   * `acceptInvitationIfSeatAvailable` above takes a `TenantContext` because
+   * every OTHER caller of it already knows the tenant. An invitee clicking
+   * a link in their inbox does not: they hold only the raw token, so this
+   * method resolves the tenant FROM the token itself — necessarily a
+   * cross-tenant lookup, bounded to at most one row by
+   * `account_invitations`' `UNIQUE(token_hash)` index
+   * (0002_organizations.sql), the same shape of lookup as
+   * `CredentialsRepository.findByEmailAnyTenant` /
+   * `findUsableEmailVerificationAnyTenant`.
+   *
+   * Also creates the invitee's `credentials` row, in the SAME atomic
+   * operation as the accept — an invitee has no credential yet (that is
+   * the whole gap this closes), and doing it in a second, separate write
+   * would let a seat be consumed by someone who still cannot log in if
+   * that second write ever failed. `passwordHash` is already hashed by the
+   * caller (PBKDF2 via `hashPassword`, `WORKERS_FREE_TIER_ITERATIONS`) —
+   * this port never sees a raw password, same discipline as
+   * `CreateTenantInput.passwordHash`. The credential's email is always the
+   * invitation row's own stored address — the caller never supplies one —
+   * so a token can never be redeemed under a different address than it was
+   * sent to.
+   *
+   * Returns a discriminated result rather than throwing for every ordinary
+   * outcome (see `AcceptInvitationByTokenResult`'s own doc): an unknown or
+   * already-used token, a cap reached since the invite was sent, and the
+   * invitee's address already having a credential elsewhere are all
+   * expected results of a public endpoint, not exceptions.
+   */
+  acceptInvitationByToken(
+    rawToken: string,
+    passwordHash: string,
+    now: Date,
+  ): Promise<AcceptInvitationByTokenResult>;
 
   /** §2 — releases the reserved seat; the invitation stops counting once its
    * status is no longer `pending`. */

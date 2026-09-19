@@ -4,6 +4,7 @@ import { resolveSeatLimit } from "../domain/seat-limit";
 import { countSeats, type SeatInvitation, type SeatMember } from "../domain/seat-usage";
 import { SeatService, SeatLimitExceeded } from "./seat-service";
 import type {
+  AcceptInvitationByTokenResult,
   CreateInvitationInput,
   DirectUserCreationInput,
   ReservedInvitation,
@@ -46,7 +47,10 @@ function defaultConfig(): SeatLimitConfig {
  * test below (`two concurrent accepts at cap-1`) would let both callers read
  * the same "1 free seat" state and both incorrectly succeed.
  */
-class FakeSeatRepository implements SeatRepository {
+// Exported so `accept-invitation-service.test.ts` can reuse this exact fake
+// (its cross-tenant-by-token + cap + email-uniqueness behavior) rather than
+// duplicating it.
+export class FakeSeatRepository implements SeatRepository {
   private readonly stores = new Map<string, TenantStore>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private nextId = 1;
@@ -182,6 +186,76 @@ class FakeSeatRepository implements SeatRepository {
       void now;
       return newMember;
     });
+  }
+
+  /** email -> tenantId, mirroring `credentials.email`'s global UNIQUE index. */
+  private readonly credentialEmails = new Map<string, string>();
+
+  /**
+   * Fake for the PUBLIC self-serve accept — mirrors the real
+   * `SqlSeatRepository.acceptInvitationByToken`'s cross-tenant-by-token
+   * resolution, its re-check-at-accept-time cap gate, and the global
+   * email-uniqueness constraint on `credentials`, without a real database.
+   * `SeatService` itself never calls this method (see
+   * `AcceptInvitationService` instead) — this exists purely so
+   * `FakeSeatRepository` keeps satisfying the `SeatRepository` interface.
+   */
+  async acceptInvitationByToken(
+    rawToken: string,
+    passwordHash: string,
+    now: Date,
+  ): Promise<AcceptInvitationByTokenResult> {
+    const invitationId = this.tokens.get(rawToken);
+    if (invitationId === undefined) return { kind: "invalid_or_expired" };
+
+    let ownerTenantId: string | undefined;
+    let invitation: SeatInvitation | undefined;
+    for (const [tenantId, store] of this.stores) {
+      const found = store.invitations.find((i) => i.id === invitationId);
+      if (found) {
+        ownerTenantId = tenantId;
+        invitation = found;
+        break;
+      }
+    }
+    if (ownerTenantId === undefined || invitation === undefined) return { kind: "invalid_or_expired" };
+    const expired = invitation.expiresAt !== null && invitation.expiresAt.getTime() <= now.getTime();
+    if (invitation.status !== "pending" || expired) {
+      return { kind: "invalid_or_expired" };
+    }
+
+    return this.withLock({ tenantId: ownerTenantId }, async () => {
+      const store = this.store({ tenantId: ownerTenantId! });
+      const limit = resolveSeatLimit(store.config);
+      const activeMembers = store.members.filter((m) => m.status === "active" && !m.isPlatformStaff).length;
+      await this.settle();
+      if (activeMembers >= limit) return { kind: "seat_unavailable" };
+
+      const email = invitation!.email ?? `unknown+${invitation!.id}@invalid`;
+      if (this.credentialEmails.has(email)) return { kind: "email_taken" };
+
+      const memberId = `member-${this.nextId++}`;
+      const newMember: SeatMember = {
+        id: memberId,
+        userId: `user-${memberId}`,
+        joinedAt: now,
+        status: "active",
+        role: invitation!.role,
+        isPlatformStaff: false,
+      };
+      store.members.push(newMember);
+      store.invitations = store.invitations.map((i) =>
+        i.id === invitation!.id ? { ...i, status: "accepted" } : i,
+      );
+      this.credentialEmails.set(email, ownerTenantId!);
+      void passwordHash;
+      return { kind: "accepted", member: newMember, tenantId: ownerTenantId!, email };
+    });
+  }
+
+  /** Test-only: seed a pre-existing `credentials.email` collision. */
+  seedCredentialEmail(email: string, tenantId: string): void {
+    this.credentialEmails.set(email, tenantId);
   }
 
   async markInvitationExpiredOrRevoked(

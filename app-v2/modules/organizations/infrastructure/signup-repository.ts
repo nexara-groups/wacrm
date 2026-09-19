@@ -59,7 +59,7 @@ import type {
  * checking the top-level message first covers that case with no chain walk
  * needed at all.
  */
-function isDuplicateEmailError(error: unknown): boolean {
+export function isDuplicateEmailError(error: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = error;
   while (current !== null && current !== undefined && !seen.has(current)) {

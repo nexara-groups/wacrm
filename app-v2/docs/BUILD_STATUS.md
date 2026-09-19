@@ -16,7 +16,7 @@ fails without the code — not "the report said so".
 | Contacts | list, search, create; phone normalisation through the whole stack |
 | Inbox | conversation list, thread, mark-read, assign (assignee membership checked) |
 | Broadcasts | list, create, schedule, pause/resume/cancel, report, audience preview with skips grouped by reason |
-| Team / seats | usage, members, invitations, cap proven at 3/3, real tokens for invite redemption |
+| Team / seats | usage, members, invitations, cap proven at 3/3; invite → email → accept → login verified end to end |
 | Auth | password login, PBKDF2 (Workers-safe), 12-char minimum, 3h/1h sessions, revocation |
 | Multi-tenancy | one deployment serves every tenant; login resolves tenant from the credential, sessions from the token claim; isolation verified live |
 | Signup | self-serve tenant creation, all four rows in one `batch()`, atomicity proven |
@@ -29,15 +29,9 @@ fails without the code — not "the report said so".
 
 ## Next, in order
 
-1. **An accept-invitation route.** The invite email links to
-   `/accept-invite?token=...` and no such route or page exists, so invitations
-   now reach people and still cannot be accepted. `SeatService.acceptInvitation`
-   and the token lookup are wired and tested in `modules/`; nothing in
-   `apps/web` calls them. This is the last step between "invitations exist" and
-   "invitations work".
-2. **Remaining send routes** — template, media, interactive. The service layer
+1. **Remaining send routes** — template, media, interactive. The service layer
    handles all of them; only text has a route.
-3. **~20 unported screens** — dashboard, settings, templates, automations,
+2. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
