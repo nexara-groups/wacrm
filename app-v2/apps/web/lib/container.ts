@@ -1,11 +1,17 @@
 /**
  * Server-side composition root for the web app.
  *
- * Builds the module repositories ONCE per process, backed by sql.js +
- * `runMigrations` — the same dev-harness wiring as `dev/server.ts`, reused
- * rather than reimplemented. The production datastore is still undecided
- * (see DATABASE_DECISION.md at the repo root); nothing here may be treated
- * as a production adapter.
+ * Builds the module repositories ONCE per process. Which provider backs
+ * them depends on the runtime, decided by `isWorkersRuntime()` below:
+ *
+ *   - Cloudflare Workers: `D1DatabaseProvider` over the `DB` binding
+ *     (`buildD1BaseServices`) — the real production path, no seeding.
+ *   - Everything else (`next dev`, `vitest run`): sql.js + `runMigrations`
+ *     + `SEEDERS`, the same dev-harness wiring `dev/server.ts` also uses
+ *     (`buildDevBaseServices`) — reused rather than reimplemented, and
+ *     never reachable from the Workers path.
+ *
+ * See `docs/cloudflare-deploy.md` for the deploy commands and bindings.
  *
  * Demo data comes from `lib/seed/*`, one module per vertical slice, each
  * writing through the real repositories — never a parallel copy of the data.
