@@ -30,11 +30,15 @@ fails without the code — not "the report said so".
 ## Next, in order
 
 1. **WhatsApp number settings** — a tenant cannot connect its own number;
-   config rows are seeded by hand. BLOCKED ON A DECISION: the access token
-   would be stored in plaintext, since nothing in the codebase encrypts it
-   (`WhatsAppConfigRecord.accessToken` says "encrypted at rest by the caller"
-   and the only caller seeds a fake). Needs AES-GCM under a Worker secret
-   before the screen exists.
+   config rows are seeded by hand. The cipher this needs now exists and is
+   tested (`nexara/core/crypto/secret-box.ts`, AES-256-GCM, context-bound,
+   0.117 ms per seal+open round trip measured — against PBKDF2's 6.2 ms it is
+   free), but NOTHING USES IT YET. Remaining, in order: seal on write and open
+   on read in the WhatsApp config repository; a one-way migration for the
+   plaintext rows that exist (`isSealed` distinguishes them); a
+   `SECRET_ENCRYPTION_KEY` Worker secret that the container refuses to start
+   without in production, the way it already refuses a missing `AUTH_SECRET`;
+   then the screen.
 2. **Media and interactive composer modes** — both routes exist and are
    tested; only text and template are reachable from the inbox. Media also
    needs an upload path (`WhatsAppService.uploadMedia` has no route).
@@ -79,6 +83,14 @@ Each of these cost real time or shipped a bug. They are not style preferences.
   explicitly — a cast there would compile and lie. Likewise the contract's
   media enum carries `sticker`, which the port does not model: the route
   refuses it with a 422 rather than widening the port.
+
+- **Hashing and encryption are not interchangeable.** A Meta access token is
+  sent to Meta on every message, so it must be recoverable — `hashToken` is
+  the wrong tool and reaching for it is how a token ends up stored in the
+  clear instead. `secret-box.ts` is the reversible half, and its ciphertexts
+  are bound to the row they belong to (GCM additional data), so a sealed
+  token moved into another tenant's config row fails to open rather than
+  quietly sending that tenant's traffic on someone else's credentials.
 
 - **A route with no UI is not a shipped feature.** Text send had a route,
   contract, tests and a service layer for weeks, and no composer — nobody
