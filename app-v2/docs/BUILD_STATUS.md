@@ -22,16 +22,14 @@ fails without the code — not "the report said so".
 | Signup | self-serve tenant creation, all four rows in one `batch()`, atomicity proven |
 | Platform console | audit log, compliance cases (two-person, TTL'd, scoped); staff cannot browse message content |
 | WhatsApp inbound | signature-verified (raw bytes, constant-time), idempotent, messages reach the inbox |
-| WhatsApp outbound | text send only |
+| WhatsApp outbound | text, template, media, interactive — every send goes through one consent/suppression failure mapping (`apps/web/lib/send-plumbing.ts`) |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
 
 ## Next, in order
 
-1. **Remaining send routes** — template, media, interactive. The service layer
-   handles all of them; only text has a route.
-2. **~20 unported screens** — dashboard, settings, templates, automations,
+1. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
@@ -65,6 +63,14 @@ Each of these cost real time or shipped a bug. They are not style preferences.
 - **Foreign keys are ON in the sql.js harness**, matching D1. Do not turn this
   off to make a test pass; it exists because a retention delete that looks fine
   with FKs off is rejected by D1.
+- **The contract and the vendor port disagree on purpose.** The wire
+  `interactivePayloadSchema` tags its button variant `kind: "button"` (Meta's
+  `interactive.type`); the provider port tags it `kind: "buttons"` (the vendor
+  `buttons[]` field). `apps/web/lib/interactive-payload.ts` maps between them
+  explicitly — a cast there would compile and lie. Likewise the contract's
+  media enum carries `sticker`, which the port does not model: the route
+  refuses it with a 422 rather than widening the port.
+
 - **Never trust a tenant from a request.** Derive it from a verified token, or
   from a row found by a globally-unique key. Signup ignores a client-supplied
   account id; the webhook resolves its tenant from `phone_number_id`.
