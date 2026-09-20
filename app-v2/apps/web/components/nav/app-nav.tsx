@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Megaphone, MessagesSquare, Users, UserCog } from "lucide-react";
+import { FileText, Megaphone, MessagesSquare, Users, UserCog } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -18,6 +18,7 @@ const LINKS = [
   { href: "/contacts", label: "Contacts", icon: Users },
   { href: "/inbox", label: "Inbox", icon: MessagesSquare },
   { href: "/broadcasts", label: "Broadcasts", icon: Megaphone },
+  { href: "/templates", label: "Templates", icon: FileText },
   { href: "/settings/team", label: "Team", icon: UserCog },
 ] as const;
 

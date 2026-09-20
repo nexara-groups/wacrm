@@ -73,7 +73,18 @@ export function ContactsTable({ initial }: { initial: ContactsPage }) {
   }, []);
 
   // Debounced search — reload 300ms after the last keystroke.
+  // The server component that renders this table already fetched exactly
+  // this page (`initial`), so refetching it on mount reads every row a
+  // second time for a result the browser is already displaying. On the free
+  // tier rows READ is the metered quantity, so that doubled the cost of
+  // simply opening the screen. The effect below now runs only once the
+  // operator has actually changed something.
+  const hydrated = useRef(false);
   useEffect(() => {
+    if (!hydrated.current) {
+      hydrated.current = true;
+      return;
+    }
     const handle = setTimeout(() => {
       setPage(1);
       reload(search, 1);

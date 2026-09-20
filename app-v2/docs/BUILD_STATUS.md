@@ -15,6 +15,7 @@ fails without the code — not "the report said so".
 |---|---|
 | Contacts | list, search, create; phone normalisation through the whole stack |
 | Inbox | conversation list, thread, mark-read, assign (assignee membership checked), reply composer — text and template, verified in a real browser |
+| Templates | `/templates` lists the account's mirrored templates with status, category and parameter count; read-only (no create/edit/sync routes exist) |
 | Broadcasts | list, create, schedule, pause/resume/cancel, report, audience preview with skips grouped by reason |
 | Team / seats | usage, members, invitations, cap proven at 3/3; invite → email → accept → login verified end to end |
 | Auth | password login, PBKDF2 (Workers-safe), 12-char minimum, 3h/1h sessions, revocation |
@@ -57,6 +58,13 @@ fails without the code — not "the report said so".
 ## Constraints that have already bitten
 
 Each of these cost real time or shipped a bug. They are not style preferences.
+
+- **A table screen used to read itself twice.** Every list screen renders
+  page 1 from the server, then a mount effect fetched the same page again —
+  doubling the metered read for a result already on screen. Measured in a
+  browser: three screens, one redundant request each, now zero. A client
+  table that takes an `initial` page must not refetch it until the operator
+  changes something.
 
 - **D1 free tier meters rows READ.** Any query whose cost scales with table
   size rather than page size is a bug. Four routes once walked whole tables to
