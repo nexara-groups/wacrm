@@ -27,20 +27,29 @@ fails without the code — not "the report said so".
 | Media upload | `POST /api/media` turns a browser file into a Meta media id; 5 MB cap checked twice, closed MIME allow-list |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
+| WhatsApp connection API | `GET`/`PUT /api/whatsapp/connection`; the token is write-only (never echoed, even masked), the tenant comes from the session, writing is owner-only |
 | Secrets at rest | WhatsApp access tokens sealed with AES-256-GCM, bound to their row; a sealed row with no key throws rather than returning ciphertext |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
 
 ## Next, in order
 
-1. **WhatsApp number settings screen** — a tenant still cannot connect its
-   own number; config rows are seeded by hand. The storage side is now done:
-   `WhatsAppConfigRepository` seals on write and opens on read, bound to the
-   row, and the container refuses to start in production without
-   `SECRET_ENCRYPTION_KEY`. What remains is the screen itself plus the routes
-   behind it (save a number, verify it against Meta, show registration
-   state). No migration is needed for existing rows: a plaintext row still
+1. **Switching to a different WhatsApp number.** `PUT
+   /api/whatsapp/connection` refuses it with a 409 rather than half-doing it:
+   `upsert` is keyed on (account, phone_number_id), so a new id inserts a
+   SECOND row while `listByAccount()[0]` — what every send route reads — keeps
+   returning the original, and the operator would be told the number changed
+   while every message still went out on the old one. Making it work needs a
+   way to retire a config row, which `WhatsAppConfigRepositoryPort` does not
+   have. That is a port + repository change, deliberately not improvised
+   inside a route.
+2. **Tenant routes perform no role check**, with one exception (`PUT
+   /api/whatsapp/connection`, gated on `tenant:manage` because the token it
+   writes repoints every outbound message). Invitations, seats, broadcasts and
+   contacts are all writable by any authenticated member today. Real gap,
+   wider than one route, and worth its own pass rather than a scattering of
+   ad-hoc checks. No migration is needed for existing rows: a plaintext row still
    reads and is re-sealed by its next write.
-2. **~20 unported screens** — dashboard, settings, templates, automations,
+3. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 

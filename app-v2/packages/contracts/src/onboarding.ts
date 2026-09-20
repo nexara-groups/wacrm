@@ -156,3 +156,52 @@ export type CompleteOnboardingRequest = z.infer<typeof completeOnboardingRequest
 
 export const completeOnboardingResponseSchema = apiResult({ state: onboardingStateSchema });
 export type CompleteOnboardingResponse = z.infer<typeof completeOnboardingResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// The WhatsApp connection, as a settings screen sees it
+//
+// Deliberately NOT a view over `whatsapp_configs` verbatim: the row's
+// `access_token` never appears on the wire in either direction. A screen
+// needs to know whether a token is stored, never what it is — so the read
+// model carries `hasAccessToken` and nothing else about it. Echoing the token
+// back (even masked) would put a tenant's Meta credential into a browser
+// cache, a proxy log and a screenshot, for no operator benefit.
+// ---------------------------------------------------------------------------
+
+/** Mirrors `WhatsAppRegistrationState` in `modules/whatsapp/application/ports.ts`. */
+export const whatsappRegistrationStateSchema = z.enum(["unregistered", "pending", "registered", "failed"]);
+export type WhatsappRegistrationState = z.infer<typeof whatsappRegistrationStateSchema>;
+
+export const whatsappConnectionSchema = z.object({
+  phoneNumberId: z.string().min(1),
+  wabaId: z.string().min(1),
+  displayName: z.string().nullable(),
+  verifiedName: z.string().nullable(),
+  qualityRating: z.string().nullable(),
+  registrationState: whatsappRegistrationStateSchema,
+  /** Whether a token is on file. Never the token, and never part of it. */
+  hasAccessToken: z.boolean(),
+  updatedAt: isoDateTimeSchema,
+});
+export type WhatsappConnection = z.infer<typeof whatsappConnectionSchema>;
+
+export const getWhatsappConnectionResponseSchema = apiResult({
+  connection: whatsappConnectionSchema.nullable(),
+});
+export type GetWhatsappConnectionResponse = z.infer<typeof getWhatsappConnectionResponseSchema>;
+
+/**
+ * No `accountId` field, unlike `connectMetaManuallyRequestSchema` above: the
+ * tenant is derived from the verified session, never from the request body.
+ * Accepting one here would let any authenticated caller name someone else's
+ * account and write a token into it.
+ */
+export const saveWhatsappConnectionRequestSchema = z.object({
+  wabaId: z.string().min(1).max(64),
+  phoneNumberId: z.string().min(1).max(64),
+  accessToken: z.string().min(1).max(1024),
+});
+export type SaveWhatsappConnectionRequest = z.infer<typeof saveWhatsappConnectionRequestSchema>;
+
+export const saveWhatsappConnectionResponseSchema = apiResult({ connection: whatsappConnectionSchema });
+export type SaveWhatsappConnectionResponse = z.infer<typeof saveWhatsappConnectionResponseSchema>;
