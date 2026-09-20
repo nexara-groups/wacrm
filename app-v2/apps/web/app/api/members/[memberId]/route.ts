@@ -22,6 +22,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { opaqueIdSchema } from "@packages/contracts/src/common/ids";
 import { SeatService } from "@modules/organizations/application/seat-service";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toAccountMemberDTO, seatLimitExceededResponse } from "@/lib/seat-dto";
 import {
   fail,
@@ -39,6 +40,9 @@ interface RouteContext {
 
 export async function DELETE(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("members:remove");
+    if (!authorized.ok) return authorized.response;
+
     const { memberId: raw } = await context.params;
     const memberId = parseOrThrow(opaqueIdSchema, raw);
 
@@ -71,6 +75,11 @@ export async function DELETE(_request: NextRequest, context: RouteContext): Prom
 
 export async function PATCH(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    // Reactivation consumes a seat, the same spend an invitation makes — so
+    // it sits with the rest of the seat-spending actions, not below them.
+    const authorized = await authorizeAction("members:reactivate");
+    if (!authorized.ok) return authorized.response;
+
     const { memberId: raw } = await context.params;
     const memberId = parseOrThrow(opaqueIdSchema, raw);
 

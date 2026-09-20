@@ -107,6 +107,20 @@ vi.mock("@/lib/whatsapp-container", () => ({
   getWhatsAppContainer: async () => ({ service: { sendText: sendTextMock } }),
 }));
 
+// `messages:send`'s minimum role is "member" (ACTION_MINIMUM_ROLE), the
+// lowest rank in the system — every real tenant role clears it, so there is
+// no in-tenant role to prove a 403 against here. The gate is still real: an
+// unauthenticated caller is what `authorizeAction` refuses.
+let sessionUser: { userId: string; tenantId: string; role: string } | null = {
+  userId: "u1",
+  tenantId: TENANT_ID,
+  role: "member",
+};
+vi.mock("@/lib/session", () => ({
+  getCurrentAuth: async () =>
+    sessionUser ? { user: sessionUser, tenant: { tenantId: TENANT_ID }, accessToken: "t" } : null,
+}));
+
 const { POST } = await import("./route");
 
 function post(body: unknown): Request {
@@ -126,6 +140,7 @@ beforeEach(() => {
   contact = makeContact();
   configs = [makeConfig()];
   insertedMessages = [];
+  sessionUser = { userId: "u1", tenantId: TENANT_ID, role: "member" };
   sendTextMock.mockClear();
   sendTextMock.mockImplementation(async () => ({ ok: true, value: { waMessageId: "wamid.123" } }));
   repositories.conversations.findById.mockClear();
@@ -192,6 +207,14 @@ describe("POST /api/conversations/[conversationId]/messages/send", () => {
     expect(res.status).toBe(404);
     const json = await res.json();
     expect(json.error.code).toBe("not_found");
+    expect(sendTextMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unauthenticated caller before touching the conversation", async () => {
+    sessionUser = null;
+    const res = await POST(post({ body: "Hello there" }) as never, ctx() as never);
+    expect(res.status).toBe(401);
+    expect(repositories.conversations.findById).not.toHaveBeenCalled();
     expect(sendTextMock).not.toHaveBeenCalled();
   });
 });

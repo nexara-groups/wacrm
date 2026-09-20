@@ -56,8 +56,13 @@ import { roleAtLeast, type Role } from "@nexara/core/rbac";
  * screen could infer. If the escalation ever costs a real incident, split
  * them and say so here.
  *
- * `seats:invite` / `invitations:revoke` / `members:remove` — admin, matching
- * the framework's `users:manage` grant.
+ * `seats:invite` / `invitations:revoke` / `members:remove` /
+ * `members:reactivate` — admin, matching the framework's `users:manage`
+ * grant. Reactivation belongs with the rest of them because it CONSUMES A
+ * SEAT: it is the same spend as an invitation, arriving through a different
+ * door. It was missing from the first version of this table, which is
+ * exactly the failure the rule above is meant to catch — the route changed
+ * state and nobody had decided who may call it.
  *
  * `whatsapp:connect` — owner. It repoints every outbound message this
  * account sends.
@@ -74,6 +79,7 @@ export const ACTION_MINIMUM_ROLE = {
   "seats:invite": "admin",
   "invitations:revoke": "admin",
   "members:remove": "admin",
+  "members:reactivate": "admin",
   "whatsapp:connect": "owner",
 } as const satisfies Record<string, Role>;
 

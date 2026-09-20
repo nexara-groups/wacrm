@@ -18,13 +18,13 @@
  *    credentials bug waiting to be written.
  *
  * 3. WRITING IS OWNER-ONLY. Replacing the token repoints every outbound
- *    message this account sends, so it sits behind `tenant:manage`, which
- *    `ROLE_PERMISSIONS` grants to `owner` alone. Reading is open to any
- *    member of the tenant: it discloses no secret and an agent needs to see
- *    whether the account is connected at all. NOTE: most other tenant routes
- *    in this app currently perform no role check — that gap is real and wider
- *    than this route; it is recorded in BUILD_STATUS.md rather than quietly
- *    half-fixed here.
+ *    message this account sends, so it sits behind `authorizeAction
+ *    ("whatsapp:connect")` (`@/lib/authorize-route`), which
+ *    `ACTION_MINIMUM_ROLE` (`@/lib/route-authorization`) maps to `owner`
+ *    alone. Reading is open to any member of the tenant: it discloses no
+ *    secret and an agent needs to see whether the account is connected at
+ *    all. This was the one write route gated before that table existed; it
+ *    now uses the same mechanism as every other one.
  *
  * Storage-side encryption is not this route's business: the repository seals
  * the token on write and opens it on read (see `WhatsAppConfigRepository`).
@@ -35,14 +35,11 @@ import {
   type WhatsappConnection,
 } from "@packages/contracts/src/onboarding";
 import { AccountId } from "@packages/domain/src/ids";
-import { PermissionService } from "@nexara/core/rbac";
 import type { WhatsAppConfigRecord } from "@modules/whatsapp/application/ports";
 import { getContainer } from "@/lib/container";
 import { getWhatsAppContainer } from "@/lib/whatsapp-container";
-import { getCurrentAuth } from "@/lib/session";
+import { authorizeAction } from "@/lib/authorize-route";
 import { fail, internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
-
-const permissions = new PermissionService();
 
 function toConnectionDTO(config: WhatsAppConfigRecord): WhatsappConnection {
   return {
@@ -71,21 +68,12 @@ export async function GET(): Promise<NextResponse> {
 
 export async function PUT(request: NextRequest): Promise<NextResponse> {
   try {
-    const { repositories, tenant } = await getContainer();
+    // Same mechanism as every other gated write now — see
+    // lib/route-authorization.ts for why `whatsapp:connect` is owner-only.
+    const authorized = await authorizeAction("whatsapp:connect");
+    if (!authorized.ok) return authorized.response;
 
-    // `getContainer()` does not carry the role, so the principal comes from
-    // the same verified session it was built from — never from the request.
-    const auth = await getCurrentAuth();
-    if (!auth) return fail({ code: "unauthenticated", laymanMessage: "Please sign in again." }, 401);
-    if (!permissions.canInTenant(auth.user, "tenant:manage", tenant.tenantId)) {
-      return fail(
-        {
-          code: "forbidden",
-          laymanMessage: "Only the account owner can change the WhatsApp number this account sends from.",
-        },
-        403,
-      );
-    }
+    const { repositories, tenant } = await getContainer();
 
     const json: unknown = await request.json().catch(() => ({}));
     const body = (json ?? {}) as Record<string, unknown>;

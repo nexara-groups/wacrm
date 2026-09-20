@@ -13,6 +13,7 @@ import type { ConversationId } from "@packages/domain/src/ids";
 import type { MediaReference } from "@modules/whatsapp/domain/whatsapp-provider.interface";
 import { InboxService } from "@modules/conversations/application/inbox-service";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { getWhatsAppContainer } from "@/lib/whatsapp-container";
 import { toMessageDTO } from "@/lib/message-dto";
 import { resolveSendTarget, sendFailureResponse } from "@/lib/send-plumbing";
@@ -24,6 +25,9 @@ interface RouteContext {
 
 export async function POST(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("messages:send");
+    if (!authorized.ok) return authorized.response;
+
     const { conversationId: rawConversationId } = await context.params;
     const json: unknown = await request.json().catch(() => ({}));
     const body = (json ?? {}) as Record<string, unknown>;

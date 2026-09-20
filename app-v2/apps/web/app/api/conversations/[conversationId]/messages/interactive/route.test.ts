@@ -100,6 +100,20 @@ vi.mock("@/lib/whatsapp-container", () => ({
   getWhatsAppContainer: async () => ({ service: { sendInteractive: sendInteractiveMock } }),
 }));
 
+// `messages:send`'s minimum role is "member", the lowest rank in the
+// system — every real tenant role clears it, so there is no in-tenant role
+// to prove a 403 against here. The gate is still real: an unauthenticated
+// caller is what `authorizeAction` refuses.
+let sessionUser: { userId: string; tenantId: string; role: string } | null = {
+  userId: "u1",
+  tenantId: TENANT_ID,
+  role: "member",
+};
+vi.mock("@/lib/session", () => ({
+  getCurrentAuth: async () =>
+    sessionUser ? { user: sessionUser, tenant: { tenantId: TENANT_ID }, accessToken: "t" } : null,
+}));
+
 const { POST } = await import("./route");
 
 function post(body: unknown): Request {
@@ -119,6 +133,7 @@ beforeEach(() => {
   contact = makeContact();
   configs = [makeConfig()];
   insertedMessages = [];
+  sessionUser = { userId: "u1", tenantId: TENANT_ID, role: "member" };
   sendInteractiveMock.mockClear();
   sendInteractiveMock.mockImplementation(async () => ({ ok: true, value: { waMessageId: "wamid.123" } }));
   repositories.messages.insert.mockClear();
@@ -209,6 +224,17 @@ describe("POST /api/conversations/[conversationId]/messages/interactive", () => 
     expect(res.status).toBe(404);
     const json = await res.json();
     expect(json.error.code).toBe("not_found");
+    expect(sendInteractiveMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unauthenticated caller before touching the conversation", async () => {
+    sessionUser = null;
+    const res = await POST(
+      post({ bodyText: "Pick one", interactive: { kind: "button", buttons: [{ id: "yes", title: "Yes" }] } }) as never,
+      ctx() as never,
+    );
+    expect(res.status).toBe(401);
+    expect(repositories.conversations.findById).not.toHaveBeenCalled();
     expect(sendInteractiveMock).not.toHaveBeenCalled();
   });
 });

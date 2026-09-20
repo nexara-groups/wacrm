@@ -15,6 +15,7 @@ import {
 import { parsePhoneNumber } from "@packages/domain";
 import { paginationRange } from "@shared/pagination";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toContactDTO } from "@/lib/contact-dto";
 import {
   fail,
@@ -72,6 +73,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("contacts:write");
+    if (!authorized.ok) return authorized.response;
+
     const body = parseOrThrow(createContactRequestSchema, await request.json());
 
     let phoneNumber: string;

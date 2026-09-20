@@ -11,6 +11,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { markConversationReadRequestSchema } from "@packages/contracts/src/conversations";
 import { markRead } from "@modules/conversations/domain/conversation";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toConversationDTO } from "@/lib/conversation-dto";
 import {
   internalError,
@@ -27,6 +28,9 @@ interface RouteContext {
 
 export async function POST(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("conversations:mark-read");
+    if (!authorized.ok) return authorized.response;
+
     const { conversationId: raw } = await context.params;
     const { conversationId } = parseOrThrow(markConversationReadRequestSchema, {
       conversationId: raw,

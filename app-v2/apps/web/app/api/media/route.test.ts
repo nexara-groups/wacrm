@@ -40,6 +40,20 @@ vi.mock("@/lib/whatsapp-container", () => ({
   getWhatsAppContainer: async () => ({ service: { uploadMedia: uploadMediaMock } }),
 }));
 
+// `media:upload`'s minimum role is "member", the lowest rank in the
+// system — every real tenant role clears it, so there is no in-tenant role
+// to prove a 403 against here. The gate is still real: an unauthenticated
+// caller is what `authorizeAction` refuses.
+let sessionUser: { userId: string; tenantId: string; role: string } | null = {
+  userId: "u1",
+  tenantId: TENANT_ID,
+  role: "member",
+};
+vi.mock("@/lib/session", () => ({
+  getCurrentAuth: async () =>
+    sessionUser ? { user: sessionUser, tenant: { tenantId: TENANT_ID }, accessToken: "t" } : null,
+}));
+
 const { POST } = await import("./route");
 
 function postFormData(form: FormData, extraHeaders?: Record<string, string>): Request {
@@ -69,6 +83,7 @@ function postWithFakeContentLength(form: FormData, claimedLength: number): Reque
 
 beforeEach(() => {
   configs = [makeConfig()];
+  sessionUser = { userId: "u1", tenantId: TENANT_ID, role: "member" };
   uploadMediaMock.mockClear();
   uploadMediaMock.mockImplementation(async () => ({ ok: true, value: { mediaId: "media-xyz" } }));
   repositories.whatsappConfig.listByAccount.mockClear();
@@ -170,6 +185,17 @@ describe("POST /api/media", () => {
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.error.code).toBe("whatsapp_not_configured");
+    expect(uploadMediaMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unauthenticated caller before reading the upload", async () => {
+    sessionUser = null;
+    const form = new FormData();
+    form.set("file", new File([new Uint8Array([1, 2, 3])], "photo.jpg", { type: "image/jpeg" }));
+
+    const res = await POST(postFormData(form) as never);
+    expect(res.status).toBe(401);
+    expect(repositories.whatsappConfig.listByAccount).not.toHaveBeenCalled();
     expect(uploadMediaMock).not.toHaveBeenCalled();
   });
 });

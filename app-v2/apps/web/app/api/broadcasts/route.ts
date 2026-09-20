@@ -22,6 +22,7 @@ import { paginationRange } from "@shared/pagination";
 import type { AccountId, UserId } from "@packages/domain/src/ids";
 import type { BroadcastRecord, BroadcastSearchFilter } from "@modules/broadcasts/application/ports";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toBroadcastDTO } from "@/lib/broadcast-dto";
 import {
   fail,
@@ -78,6 +79,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("broadcasts:write");
+    if (!authorized.ok) return authorized.response;
+
     const body = parseOrThrow(createBroadcastRequestSchema, await request.json());
 
     const { repositories, tenant, ownerUserId } = await getContainer();

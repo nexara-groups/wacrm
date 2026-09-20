@@ -10,6 +10,7 @@ import {
   updateContactRequestSchema,
 } from "@packages/contracts/src/contacts";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toContactDTO } from "@/lib/contact-dto";
 import {
   fail,
@@ -42,6 +43,9 @@ export async function GET(_request: NextRequest, context: RouteContext): Promise
 
 export async function PATCH(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("contacts:write");
+    if (!authorized.ok) return authorized.response;
+
     const { contactId: rawContactId } = await context.params;
     const body = parseOrThrow(updateContactRequestSchema, await request.json());
 

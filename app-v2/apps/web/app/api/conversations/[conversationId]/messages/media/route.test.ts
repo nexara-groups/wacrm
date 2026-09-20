@@ -100,6 +100,20 @@ vi.mock("@/lib/whatsapp-container", () => ({
   getWhatsAppContainer: async () => ({ service: { sendMedia: sendMediaMock } }),
 }));
 
+// `messages:send`'s minimum role is "member", the lowest rank in the
+// system — every real tenant role clears it, so there is no in-tenant role
+// to prove a 403 against here. The gate is still real: an unauthenticated
+// caller is what `authorizeAction` refuses.
+let sessionUser: { userId: string; tenantId: string; role: string } | null = {
+  userId: "u1",
+  tenantId: TENANT_ID,
+  role: "member",
+};
+vi.mock("@/lib/session", () => ({
+  getCurrentAuth: async () =>
+    sessionUser ? { user: sessionUser, tenant: { tenantId: TENANT_ID }, accessToken: "t" } : null,
+}));
+
 const { POST } = await import("./route");
 
 function post(body: unknown): Request {
@@ -119,6 +133,7 @@ beforeEach(() => {
   contact = makeContact();
   configs = [makeConfig()];
   insertedMessages = [];
+  sessionUser = { userId: "u1", tenantId: TENANT_ID, role: "member" };
   sendMediaMock.mockClear();
   sendMediaMock.mockImplementation(async () => ({ ok: true, value: { waMessageId: "wamid.123" } }));
   repositories.messages.insert.mockClear();
@@ -185,6 +200,14 @@ describe("POST /api/conversations/[conversationId]/messages/media", () => {
     expect(res.status).toBe(422);
     const json = await res.json();
     expect(json.error.code).toBe("filename_required");
+    expect(sendMediaMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unauthenticated caller before touching the conversation", async () => {
+    sessionUser = null;
+    const res = await POST(post({ mediaKind: "image", mediaId: "media-abc" }) as never, ctx() as never);
+    expect(res.status).toBe(401);
+    expect(repositories.conversations.findById).not.toHaveBeenCalled();
     expect(sendMediaMock).not.toHaveBeenCalled();
   });
 });

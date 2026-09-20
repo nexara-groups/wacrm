@@ -15,6 +15,7 @@ import { cancelBroadcastRequestSchema } from "@packages/contracts/src/broadcasts
 import type { AccountId } from "@packages/domain/src/ids";
 import { canTransitionBroadcastStatus } from "@packages/domain/src/status/broadcast-status";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toBroadcastDTO } from "@/lib/broadcast-dto";
 import { fail, internalError, isZodError, notFoundError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 
@@ -24,6 +25,10 @@ interface RouteContext {
 
 export async function POST(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    // Same `broadcasts:control` bar as pause/resume — see pause/route.ts.
+    const authorized = await authorizeAction("broadcasts:control");
+    if (!authorized.ok) return authorized.response;
+
     const { broadcastId: raw } = await context.params;
     const { broadcastId } = parseOrThrow(cancelBroadcastRequestSchema, { broadcastId: raw });
 

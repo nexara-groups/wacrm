@@ -11,6 +11,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { assignConversationRequestSchema } from "@packages/contracts/src/conversations";
 import { assignConversation } from "@modules/conversations/domain/conversation";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toConversationDTO } from "@/lib/conversation-dto";
 import {
   fail,
@@ -28,6 +29,9 @@ interface RouteContext {
 
 export async function POST(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("conversations:assign");
+    if (!authorized.ok) return authorized.response;
+
     const { conversationId: raw } = await context.params;
     const body: unknown = await request.json();
     const bodyObject = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};

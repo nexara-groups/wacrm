@@ -18,6 +18,7 @@ import { scheduleBroadcastRequestSchema } from "@packages/contracts/src/broadcas
 import type { AccountId } from "@packages/domain/src/ids";
 import { canTransitionBroadcastStatus } from "@packages/domain/src/status/broadcast-status";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toBroadcastDTO } from "@/lib/broadcast-dto";
 import { fail, internalError, isZodError, notFoundError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 
@@ -27,6 +28,9 @@ interface RouteContext {
 
 export async function POST(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("broadcasts:write");
+    if (!authorized.ok) return authorized.response;
+
     const { broadcastId: rawBroadcastId } = await context.params;
     const body = parseOrThrow(scheduleBroadcastRequestSchema, await request.json());
 

@@ -28,6 +28,7 @@ fails without the code — not "the report said so".
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
 | WhatsApp settings screen | `/settings/whatsapp` shows the connected number and registration state in plain words; saving over a live connection takes a confirmation; the token field is write-only and empties on success |
+| Authorization | every tenant write route gated on a minimum role from one table (`apps/web/lib/route-authorization.ts`); verified live with a real invited member — a member can send and keep contacts, and is refused assignment, broadcasts, seats, member removal and the WhatsApp number |
 | WhatsApp connection API | `GET`/`PUT /api/whatsapp/connection`; the token is write-only (never echoed, even masked), the tenant comes from the session, writing is owner-only |
 | Secrets at rest | WhatsApp access tokens sealed with AES-256-GCM, bound to their row; a sealed row with no key throws rather than returning ciphertext |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
@@ -43,14 +44,7 @@ fails without the code — not "the report said so".
    way to retire a config row, which `WhatsAppConfigRepositoryPort` does not
    have. That is a port + repository change, deliberately not improvised
    inside a route.
-2. **Tenant routes perform no role check**, with one exception (`PUT
-   /api/whatsapp/connection`, gated on `tenant:manage` because the token it
-   writes repoints every outbound message). Invitations, seats, broadcasts and
-   contacts are all writable by any authenticated member today. Real gap,
-   wider than one route, and worth its own pass rather than a scattering of
-   ad-hoc checks. No migration is needed for existing rows: a plaintext row still
-   reads and is re-sealed by its next write.
-3. **~20 unported screens** — dashboard, settings, templates, automations,
+2. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
@@ -106,6 +100,17 @@ Each of these cost real time or shipped a bug. They are not style preferences.
   are bound to the row they belong to (GCM additional data), so a sealed
   token moved into another tenant's config row fails to open rather than
   quietly sending that tenant's traffic on someone else's credentials.
+
+- **The gate goes before the body is parsed.** A caller who may not act
+  should not be able to make the route do work, or learn from a validation
+  error what shape the body should have. Every `authorizeAction` call is the
+  first statement in its route's `try`.
+
+- **A table of write actions is only as good as its coverage.** The first
+  version missed `PATCH /api/members/[memberId]` — reactivating a member,
+  which consumes a seat exactly as an invitation does — and it shipped
+  ungated for one commit. A route that changes state gets an entry; "no
+  obvious minimum" is a design question, not a reason to leave it open.
 
 - **A ref that guards a fetch effect can deadlock it.** StrictMode invokes an
   effect twice on mount and runs the first cleanup in between, so an

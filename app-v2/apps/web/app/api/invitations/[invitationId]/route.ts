@@ -13,6 +13,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { opaqueIdSchema } from "@packages/contracts/src/common/ids";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import {
   internalError,
   isZodError,
@@ -28,6 +29,9 @@ interface RouteContext {
 
 export async function DELETE(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("invitations:revoke");
+    if (!authorized.ok) return authorized.response;
+
     const { invitationId: raw } = await context.params;
     const invitationId = parseOrThrow(opaqueIdSchema, raw);
 

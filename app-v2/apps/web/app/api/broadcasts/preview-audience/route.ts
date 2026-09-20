@@ -31,6 +31,7 @@ import type { ContactRecord, ContactSearchFilter } from "@modules/contacts/appli
 import { canonicalTagKey } from "@modules/contacts/domain/tags";
 import { buildAudience } from "@modules/broadcasts/domain/audience";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toAudiencePreviewDTO } from "@/lib/broadcast-dto";
 import { internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 
@@ -82,6 +83,9 @@ async function collectCandidates(
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("broadcasts:preview");
+    if (!authorized.ok) return authorized.response;
+
     const body = parseOrThrow(previewAudienceRequestSchema, await request.json());
 
     const { repositories, tenant } = await getContainer();

@@ -36,6 +36,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { AccountId } from "@packages/domain/src/ids";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { getWhatsAppContainer } from "@/lib/whatsapp-container";
 import { sendFailureResponse } from "@/lib/send-plumbing";
 import { MAX_UPLOAD_BYTES, mimeTypeToMediaKind } from "@/lib/media-upload";
@@ -55,6 +56,9 @@ function tooLarge(): NextResponse {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("media:upload");
+    if (!authorized.ok) return authorized.response;
+
     // Check #1 of 2 — reject before touching the body at all when the
     // client is honest about its size. `content-length` is attacker- or
     // bug-controlled, so this is a fast path, not the guarantee.

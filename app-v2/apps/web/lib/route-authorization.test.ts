@@ -23,7 +23,7 @@ describe("route authorization table", () => {
       admin: [
         "contacts:write", "messages:send", "media:upload", "conversations:mark-read",
         "conversations:assign", "broadcasts:write", "broadcasts:control", "broadcasts:preview",
-        "seats:invite", "invitations:revoke", "members:remove",
+        "seats:invite", "invitations:revoke", "members:remove", "members:reactivate",
       ],
       owner: ACTIONS,
     };

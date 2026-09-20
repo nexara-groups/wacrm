@@ -23,6 +23,7 @@ import { paginationQuerySchema } from "@packages/contracts/src/common/pagination
 import { paginationRange } from "@shared/pagination";
 import { SeatService } from "@modules/organizations/application/seat-service";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toFreshInvitationDTO, toListedInvitationDTO, seatLimitExceededResponse } from "@/lib/seat-dto";
 import { internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 import { sendInvitationEmail } from "@/lib/invitation-email";
@@ -76,6 +77,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const authorized = await authorizeAction("seats:invite");
+    if (!authorized.ok) return authorized.response;
+
     const body = parseOrThrow(inviteMemberRequestSchema, await request.json());
 
     const { repositories, tenant, ownerUserId, emailProvider } = await getContainer();

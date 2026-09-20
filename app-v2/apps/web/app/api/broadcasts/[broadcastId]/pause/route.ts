@@ -22,6 +22,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { pauseBroadcastRequestSchema } from "@packages/contracts/src/broadcasts";
 import type { AccountId } from "@packages/domain/src/ids";
 import { getContainer } from "@/lib/container";
+import { authorizeAction } from "@/lib/authorize-route";
 import { toBroadcastDTO } from "@/lib/broadcast-dto";
 import { fail, internalError, isZodError, notFoundError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 
@@ -33,6 +34,13 @@ const OPERATOR_PAUSE_REASON = "Paused by operator";
 
 export async function POST(_request: NextRequest, context: RouteContext): Promise<NextResponse> {
   try {
+    // `broadcasts:control`, not a lower bar just because pausing is a safety
+    // action: this endpoint family also cancels (destructive, irreversible),
+    // and neighbouring buttons can't carry different rules for a reason the
+    // screen doesn't show — see route-authorization.ts's entry for the case.
+    const authorized = await authorizeAction("broadcasts:control");
+    if (!authorized.ok) return authorized.response;
+
     const { broadcastId: raw } = await context.params;
     const { broadcastId } = parseOrThrow(pauseBroadcastRequestSchema, { broadcastId: raw });
 
