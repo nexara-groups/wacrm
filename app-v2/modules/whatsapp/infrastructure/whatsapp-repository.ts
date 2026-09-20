@@ -16,6 +16,11 @@
  * these statements are NOT tenant-scoped, when they are.
  */
 import type { DatabaseProvider, Row } from "@nexara/core/database/database-provider.interface";
+import {
+  openStoredSecret,
+  sealStoredSecret,
+  type SecretCipher,
+} from "@nexara/core/crypto/secret-cipher";
 import { recordPermanentNumberFailure, type DeliverabilityRecord } from "@modules/messaging-errors/domain/suppression";
 import { AccountId, ContactId, TemplateId } from "../../../packages/domain/src/ids";
 import type { PhoneNumber } from "../../../packages/domain/src/phone-number";
@@ -60,7 +65,21 @@ interface WhatsAppConfigRow extends Row {
   readonly updated_at: string;
 }
 
-function toConfigRecord(row: WhatsAppConfigRow): WhatsAppConfigRecord {
+/**
+ * The context a config row's access token is sealed under. Read and write
+ * MUST derive it identically — a mismatch does not corrupt anything, it just
+ * makes every token unreadable — so it lives here, in one function, rather
+ * than being spelled out at each call site.
+ *
+ * It names the row: a sealed token lifted into another account's (or another
+ * number's) row fails to open instead of silently authorising sends on
+ * credentials that were never issued for it.
+ */
+function tokenContext(accountId: string, phoneNumberId: string): string {
+  return `whatsapp_config:${accountId}:${phoneNumberId}`;
+}
+
+async function toConfigRecord(row: WhatsAppConfigRow, cipher: SecretCipher | null): Promise<WhatsAppConfigRecord> {
   return {
     id: row.id,
     accountId: AccountId(row.account_id),
@@ -70,14 +89,29 @@ function toConfigRecord(row: WhatsAppConfigRow): WhatsAppConfigRecord {
     qualityRating: row.quality_rating,
     verifiedName: row.verified_name,
     registrationState: row.registration_state as WhatsAppRegistrationState,
-    accessToken: row.access_token,
+    accessToken: await openStoredSecret(row.access_token, cipher, tokenContext(row.account_id, row.phone_number_id)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
-  constructor(private readonly db: DatabaseProvider) {}
+  /**
+   * Encryption of the access token lives HERE rather than in the callers the
+   * port's docstring once pointed at. There are several callers and only one
+   * repository: a caller that forgets to seal writes a plaintext token and
+   * nothing complains, which is precisely how this column came to hold
+   * plaintext in the first place. Infrastructure is also the layer whose job
+   * is already mapping between a stored representation and a domain value.
+   *
+   * `cipher` is `null` in development and in tests, where no key is
+   * configured; the composition root refuses to start without one in
+   * production.
+   */
+  constructor(
+    private readonly db: DatabaseProvider,
+    private readonly cipher: SecretCipher | null = null,
+  ) {}
 
   async findByPhoneNumberId(accountId: AccountId, phoneNumberId: string): Promise<WhatsAppConfigRecord | null> {
     const result = await this.db.query<WhatsAppConfigRow>(
@@ -86,7 +120,7 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
       [accountId, phoneNumberId],
     );
     const row = result.rows[0];
-    return row ? toConfigRecord(row) : null;
+    return row ? toConfigRecord(row, this.cipher) : null;
   }
 
   async findByPhoneNumberIdGlobal(phoneNumberId: string): Promise<WhatsAppConfigRecord | null> {
@@ -103,7 +137,7 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
       [phoneNumberId],
     );
     const row = result.rows[0];
-    return row ? toConfigRecord(row) : null;
+    return row ? toConfigRecord(row, this.cipher) : null;
   }
 
   async listByAccount(accountId: AccountId): Promise<readonly WhatsAppConfigRecord[]> {
@@ -112,12 +146,22 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
        select * from whatsapp_configs where account_id = $1 order by created_at asc`,
       [accountId],
     );
-    return result.rows.map(toConfigRecord);
+    return Promise.all(result.rows.map((row) => toConfigRecord(row, this.cipher)));
   }
 
   async upsert(input: NewWhatsAppConfigInput): Promise<WhatsAppConfigRecord> {
     const existing = await this.findByPhoneNumberId(input.accountId, input.phoneNumberId);
     const now = new Date().toISOString();
+
+    // Sealed once here, for both branches: the value that goes into the
+    // column is never the one the caller handed us, and the record we return
+    // still carries the plaintext the caller already holds — returning the
+    // ciphertext would hand the send path something Meta would reject.
+    const storedToken = await sealStoredSecret(
+      input.accessToken,
+      this.cipher,
+      tokenContext(input.accountId, input.phoneNumberId),
+    );
 
     if (existing) {
       await this.db.query(
@@ -134,7 +178,7 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
           input.qualityRating,
           input.verifiedName,
           input.registrationState,
-          input.accessToken,
+          storedToken,
           now,
         ],
       );
@@ -166,7 +210,7 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
         input.qualityRating,
         input.verifiedName,
         input.registrationState,
-        input.accessToken,
+        storedToken,
         now,
       ],
     );

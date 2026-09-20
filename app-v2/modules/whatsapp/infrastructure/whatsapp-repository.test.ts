@@ -7,6 +7,8 @@ import {
   WebhookEventRepository,
   WhatsAppConfigRepository,
 } from "./whatsapp-repository";
+import { createSecretCipher } from "@nexara/core/crypto/secret-cipher";
+import { generateSecretKeyMaterial, importSecretKey, isSealed } from "@nexara/core/crypto/secret-box";
 import { AccountId, ContactId, TemplateId } from "../../../packages/domain/src/ids";
 import type { PhoneNumber } from "../../../packages/domain/src/phone-number";
 import type { MetaTemplateDefinitionComponent } from "../domain/whatsapp-provider.interface";
@@ -134,6 +136,119 @@ describe("WhatsAppConfigRepository", () => {
     });
     expect(await repo.findByPhoneNumberId(ACCOUNT_A, "pn-b-only")).toBeNull();
     expect(await repo.listByAccount(ACCOUNT_A)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Access-token encryption at rest
+//
+// The column held plaintext for the whole life of this project; these tests
+// exist so it cannot quietly go back to doing so.
+// ---------------------------------------------------------------------------
+
+describe("WhatsAppConfigRepository — access token at rest", () => {
+  const TOKEN = "EAAG-a-real-looking-meta-access-token-0123456789";
+
+  async function cipher() {
+    return createSecretCipher(await importSecretKey(generateSecretKeyMaterial()));
+  }
+
+  function config(accountId: typeof ACCOUNT_A, phoneNumberId: string, accessToken: string) {
+    return {
+      accountId,
+      phoneNumberId,
+      wabaId: "waba-1",
+      displayName: null,
+      qualityRating: null,
+      verifiedName: null,
+      registrationState: "registered" as const,
+      accessToken,
+    };
+  }
+
+  async function storedToken(phoneNumberId: string): Promise<string> {
+    const result = await db.query<{ access_token: string }>(
+      `-- tenant-scope-exempt: reads the raw column this test is asserting about, by its unique key
+       select access_token from whatsapp_configs where phone_number_id = $1`,
+      [phoneNumberId],
+    );
+    return result.rows[0]!.access_token;
+  }
+
+  it("never writes the token to the column in the clear", async () => {
+    const repo = new WhatsAppConfigRepository(db, await cipher());
+    await repo.upsert(config(ACCOUNT_A, "pn-seal", TOKEN));
+
+    const stored = await storedToken("pn-seal");
+    expect(stored).not.toBe(TOKEN);
+    expect(stored).not.toContain(TOKEN);
+    expect(isSealed(stored)).toBe(true);
+  });
+
+  it("hands every read path back the plaintext token", async () => {
+    // findByPhoneNumberIdGlobal is the webhook's path. If only the other two
+    // decrypted, inbound messages would break in production and nowhere else.
+    const c = await cipher();
+    const repo = new WhatsAppConfigRepository(db, c);
+    const created = await repo.upsert(config(ACCOUNT_A, "pn-read", TOKEN));
+
+    expect(created.accessToken).toBe(TOKEN);
+    expect((await repo.findByPhoneNumberId(ACCOUNT_A, "pn-read"))!.accessToken).toBe(TOKEN);
+    expect((await repo.findByPhoneNumberIdGlobal("pn-read"))!.accessToken).toBe(TOKEN);
+    expect((await repo.listByAccount(ACCOUNT_A))[0]!.accessToken).toBe(TOKEN);
+  });
+
+  it("re-seals on update rather than leaving the first ciphertext behind", async () => {
+    const repo = new WhatsAppConfigRepository(db, await cipher());
+    await repo.upsert(config(ACCOUNT_A, "pn-upd", TOKEN));
+    const first = await storedToken("pn-upd");
+
+    const rotated = "EAAG-the-rotated-token-9876543210";
+    const updated = await repo.upsert(config(ACCOUNT_A, "pn-upd", rotated));
+
+    const second = await storedToken("pn-upd");
+    expect(second).not.toBe(first);
+    expect(isSealed(second)).toBe(true);
+    expect(updated.accessToken).toBe(rotated);
+    expect((await repo.findByPhoneNumberId(ACCOUNT_A, "pn-upd"))!.accessToken).toBe(rotated);
+  });
+
+  it("refuses to open a ciphertext lifted into another account's row", async () => {
+    // Someone who can write the database copies A's sealed token into B's
+    // row. Without the row-bound context this would simply work, and B would
+    // be sending on A's credentials.
+    const c = await cipher();
+    const repo = new WhatsAppConfigRepository(db, c);
+    await repo.upsert(config(ACCOUNT_A, "pn-a", TOKEN));
+    await repo.upsert(config(ACCOUNT_B, "pn-b", "EAAG-b-own-token"));
+
+    await db.query(
+      `-- tenant_id equivalent for this table: account_id
+       update whatsapp_configs set access_token = $2 where account_id = $1 and phone_number_id = $3`,
+      [ACCOUNT_B, await storedToken("pn-a"), "pn-b"],
+    );
+
+    await expect(repo.findByPhoneNumberId(ACCOUNT_B, "pn-b")).rejects.toThrow();
+  });
+
+  it("still reads a row written before encryption existed", async () => {
+    // The migration path: there is no flag day on which every row becomes
+    // sealed, so a plaintext row must keep working.
+    const repo = new WhatsAppConfigRepository(db, await cipher());
+    await new WhatsAppConfigRepository(db, null).upsert(config(ACCOUNT_A, "pn-legacy", TOKEN));
+
+    expect(await storedToken("pn-legacy")).toBe(TOKEN);
+    expect((await repo.findByPhoneNumberId(ACCOUNT_A, "pn-legacy"))!.accessToken).toBe(TOKEN);
+  });
+
+  it("throws rather than handing back ciphertext when the key is missing", async () => {
+    // The alternative is sending Meta a base64 blob as a bearer token and
+    // reporting whatever vendor error comes back — a configuration mistake
+    // disguised as an integration failure.
+    await new WhatsAppConfigRepository(db, await cipher()).upsert(config(ACCOUNT_A, "pn-nokey", TOKEN));
+    const keyless = new WhatsAppConfigRepository(db, null);
+
+    await expect(keyless.findByPhoneNumberId(ACCOUNT_A, "pn-nokey")).rejects.toThrow(/SECRET_ENCRYPTION_KEY/);
   });
 });
 

@@ -62,6 +62,8 @@ import {
   type D1DatabaseBinding,
 } from "@nexara/core/database/providers/d1-database-provider";
 import { buildModuleRepositories, type ModuleRepositories } from "@modules/container";
+import { createSecretCipher, type SecretCipher } from "@nexara/core/crypto/secret-cipher";
+import { importSecretKey } from "@nexara/core/crypto/secret-box";
 import { JwtAuthProvider } from "@nexara/core/auth/providers/jwt-auth-provider";
 import { SqlCredentialsRepository } from "@nexara/infrastructure";
 import type { CredentialsAuthProvider, CredentialsRepository } from "@nexara/core/auth";
@@ -111,6 +113,35 @@ function resolveAuthSecret(): string {
 }
 
 const AUTH_SECRET = resolveAuthSecret();
+
+/**
+ * The key that encrypts secrets we must read back — today the tenants'
+ * WhatsApp access tokens (`WhatsAppConfigRepository`).
+ *
+ * Same shape of decision as `resolveAuthSecret` above, and the same refusal:
+ * in production a missing key is fatal at startup. It is NOT fatal in
+ * development, where the repository stores plaintext into a database that
+ * lives in memory for the life of the process and holds a fake token.
+ *
+ * The asymmetry that makes this safe to get wrong in only one direction:
+ * with no key, a plaintext row still reads, but a SEALED row throws rather
+ * than handing back ciphertext (`openStoredSecret`). So a deployment that
+ * loses its key fails loudly instead of sending Meta a base64 blob and
+ * reporting a vendor error nobody can explain.
+ */
+async function resolveSecretCipher(): Promise<SecretCipher | null> {
+  const configured = process.env.SECRET_ENCRYPTION_KEY;
+  if (configured !== undefined && configured.length > 0) {
+    return createSecretCipher(await importSecretKey(configured));
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "SECRET_ENCRYPTION_KEY is not set. Refusing to store tenants' WhatsApp access tokens in plaintext — " +
+        "set it to 32 bytes of base64-encoded random material before deploying.",
+    );
+  }
+  return null;
+}
 
 /**
  * Process-wide services that do NOT depend on the current request: the
@@ -217,7 +248,7 @@ async function buildD1BaseServices(): Promise<BaseServices> {
   }
 
   const database = new D1DatabaseProvider({ db: binding });
-  const repositories = buildModuleRepositories(database);
+  const repositories = buildModuleRepositories(database, { secretCipher: await resolveSecretCipher() });
   const credentialsRepository = new SqlCredentialsRepository(database);
 
   // The tenant NEW credentials are created in. Sessions do not depend on it:
@@ -268,7 +299,7 @@ async function buildDevBaseServices(): Promise<BaseServices> {
     [accountId, "Demo Account", ownerId, now, now],
   );
 
-  const repositories = buildModuleRepositories(database);
+  const repositories = buildModuleRepositories(database, { secretCipher: await resolveSecretCipher() });
   const tenant: TenantContext = { tenantId: accountId as never };
 
   for (const seeder of SEEDERS) {

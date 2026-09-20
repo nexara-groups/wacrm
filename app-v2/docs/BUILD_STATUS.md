@@ -26,20 +26,19 @@ fails without the code — not "the report said so".
 | Media upload | `POST /api/media` turns a browser file into a Meta media id; 5 MB cap checked twice, closed MIME allow-list |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
+| Secrets at rest | WhatsApp access tokens sealed with AES-256-GCM, bound to their row; a sealed row with no key throws rather than returning ciphertext |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
 
 ## Next, in order
 
-1. **WhatsApp number settings** — a tenant cannot connect its own number;
-   config rows are seeded by hand. The cipher this needs now exists and is
-   tested (`nexara/core/crypto/secret-box.ts`, AES-256-GCM, context-bound,
-   0.117 ms per seal+open round trip measured — against PBKDF2's 6.2 ms it is
-   free), but NOTHING USES IT YET. Remaining, in order: seal on write and open
-   on read in the WhatsApp config repository; a one-way migration for the
-   plaintext rows that exist (`isSealed` distinguishes them); a
-   `SECRET_ENCRYPTION_KEY` Worker secret that the container refuses to start
-   without in production, the way it already refuses a missing `AUTH_SECRET`;
-   then the screen.
+1. **WhatsApp number settings screen** — a tenant still cannot connect its
+   own number; config rows are seeded by hand. The storage side is now done:
+   `WhatsAppConfigRepository` seals on write and opens on read, bound to the
+   row, and the container refuses to start in production without
+   `SECRET_ENCRYPTION_KEY`. What remains is the screen itself plus the routes
+   behind it (save a number, verify it against Meta, show registration
+   state). No migration is needed for existing rows: a plaintext row still
+   reads and is re-sealed by its next write.
 2. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.

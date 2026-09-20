@@ -41,8 +41,11 @@ export interface WhatsAppConfigRecord {
   readonly qualityRating: string | null;
   readonly verifiedName: string | null;
   readonly registrationState: WhatsAppRegistrationState;
-  /** Encrypted at rest by the caller — this port stores/returns whatever
-   *  opaque string it is given; encryption is not this module's concern. */
+  /** ALWAYS the plaintext token on this record, in both directions: callers
+   *  hand `upsert` the real token and get the real token back on a read.
+   *  Encryption at rest happens inside `WhatsAppConfigRepository`, which
+   *  seals on write and opens on read — see its constructor for why it lives
+   *  there rather than in the callers this comment used to point at. */
   readonly accessToken: string;
   readonly createdAt: ISODateString;
   readonly updatedAt: ISODateString;

@@ -92,10 +92,12 @@ copy of it here). Use the `AUTH_TENANT_ID` value from §4 as both
 | `AUTH_SECRET` | secret | `lib/container.ts` | ≥32 bytes, high-entropy. Throws at cold start if unset — this is intentional, do not set a default. |
 | `META_APP_SECRET` | secret | `lib/webhook-signature.ts` | Meta App secret; HMACs inbound webhook bodies. Throws per-request if unset. |
 | `META_WEBHOOK_VERIFY_TOKEN` | secret | `lib/webhook-signature.ts` | The token Meta's webhook GET handshake must present. Throws per-request if unset. |
+| `SECRET_ENCRYPTION_KEY` | secret | `lib/container.ts` | 32 bytes of base64 random material, e.g. `openssl rand -base64 32`. Encrypts tenants' WhatsApp access tokens at rest. Throws at cold start if unset. **Losing it makes every sealed token unreadable** — sends fail loudly rather than silently, but each tenant has to re-enter its token, so keep a copy where you keep the rest of your secrets. |
 | `AUTH_TENANT_ID` | secret or var | `lib/container.ts`'s `buildD1BaseServices` | **New requirement this task introduced** — see §5. Must equal the `accounts.id`/`tenant_id` used in §3's provisioning insert. |
 
 ```
 npx wrangler secret put AUTH_SECRET
+npx wrangler secret put SECRET_ENCRYPTION_KEY   # openssl rand -base64 32
 npx wrangler secret put META_APP_SECRET
 npx wrangler secret put META_WEBHOOK_VERIFY_TOKEN
 npx wrangler secret put AUTH_TENANT_ID

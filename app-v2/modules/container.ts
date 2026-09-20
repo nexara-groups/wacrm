@@ -16,6 +16,7 @@
  * concrete implementations. Everything downstream receives the interfaces.
  */
 import type { AtomicBatchDatabaseProvider } from "@nexara/core/database";
+import type { SecretCipher } from "@nexara/core/crypto/secret-cipher";
 import type { Services } from "@nexara/core/container";
 
 import { SqlContactRepository } from "./contacts/infrastructure/contact-repository";
@@ -164,8 +165,20 @@ export function createModuleServices(services: Services): ModuleServices {
  * is the only atomic primitive BOTH candidate stores support. D1 has no
  * interactive transactions at all.
  */
+export interface ModuleRepositoryOptions {
+  /**
+   * Decrypts/encrypts secrets that must be read back — today only the
+   * WhatsApp access token. `null` (the default) stores plaintext, which is
+   * correct for tests and the dev harness and is refused in production by
+   * the composition root, not here: this function is also what a test uses
+   * over a bare sql.js provider, and it has no way to tell those apart.
+   */
+  readonly secretCipher?: SecretCipher | null;
+}
+
 export function buildModuleRepositories(
   database: AtomicBatchDatabaseProvider,
+  options: ModuleRepositoryOptions = {},
 ): ModuleRepositories {
   return {
     contacts: new SqlContactRepository(database),
@@ -176,7 +189,7 @@ export function buildModuleRepositories(
     broadcasts: new SqlBroadcastRepository(database),
     broadcastRecipients: new SqlBroadcastRecipientRepository(database),
 
-    whatsappConfig: new WhatsAppConfigRepository(database),
+    whatsappConfig: new WhatsAppConfigRepository(database, options.secretCipher ?? null),
     messageTemplates: new MessageTemplateRepository(database),
     webhookEvents: new WebhookEventRepository(database),
     contactState: new ContactStateRepository(database),
