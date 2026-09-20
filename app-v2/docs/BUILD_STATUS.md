@@ -27,6 +27,7 @@ fails without the code — not "the report said so".
 | Media upload | `POST /api/media` turns a browser file into a Meta media id; 5 MB cap checked twice, closed MIME allow-list |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
+| WhatsApp settings screen | `/settings/whatsapp` shows the connected number and registration state in plain words; saving over a live connection takes a confirmation; the token field is write-only and empties on success |
 | WhatsApp connection API | `GET`/`PUT /api/whatsapp/connection`; the token is write-only (never echoed, even masked), the tenant comes from the session, writing is owner-only |
 | Secrets at rest | WhatsApp access tokens sealed with AES-256-GCM, bound to their row; a sealed row with no key throws rather than returning ciphertext |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
@@ -105,6 +106,15 @@ Each of these cost real time or shipped a bug. They are not style preferences.
   are bound to the row they belong to (GCM additional data), so a sealed
   token moved into another tenant's config row fails to open rather than
   quietly sending that tenant's traffic on someone else's credentials.
+
+- **A ref that guards a fetch effect can deadlock it.** StrictMode invokes an
+  effect twice on mount and runs the first cleanup in between, so an
+  "already fetched?" ref makes the second invocation return early while the
+  only in-flight request belongs to the closure the cleanup marked cancelled
+  — its `finally` skips `setLoading(false)` and the screen sits on
+  "Loading…" forever. Production, which invokes once, hides it. The settings
+  screen shipped this way and a browser check caught it; unit tests could
+  not have, since there is no React harness here.
 
 - **A route with no UI is not a shipped feature.** Text send had a route,
   contract, tests and a service layer for weeks, and no composer — nobody
