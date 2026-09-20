@@ -1,0 +1,82 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// `.open-next/worker.js` is BUILT by `opennextjs-cloudflare build` (see
+	// package.json's "cf:build") and regenerated on every build — it only
+	// exports `fetch` plus the Durable Object classes, with nowhere to add a
+	// Cron Trigger handler. `cf-entry.ts` is committed source, not build
+	// output: it imports the generated worker, re-exports its `fetch` and
+	// every Durable Object export unchanged, and adds `scheduled()` for the
+	// retention-sweep cron below. See `cf-entry.ts`'s own header for the
+	// full reasoning (including why the import needs a `paths` alias) and
+	// `apps/web/lib/retention-sweep.ts` for the sweep itself.
+	"main": "cf-entry.ts",
+	"name": "wacrm-web",
+	// Nightly message-retention sweep (apps/web/lib/retention-sweep.ts).
+	// 09:00 UTC, once a day — see `cf-entry.ts`'s `scheduled()` doc comment
+	// for why that time and that frequency.
+	"triggers": {
+		"crons": ["0 9 * * *"]
+	},
+	// Picked on the day this config was written. Cloudflare rejects a
+	// compatibility_date it does not yet recognise, so if this has gone
+	// stale by the time you deploy, bump it to today's date (or run
+	// `npx wrangler deploy` once and follow the error, which names the
+	// latest valid date) — see docs/cloudflare-deploy.md.
+	"compatibility_date": "2026-09-19",
+	// nodejs_compat: required for node:crypto (createHmac/timingSafeEqual in
+	// lib/webhook-signature.ts, jose's internals) and Buffer — verified
+	// working under workerd locally (see docs/cloudflare-deploy.md).
+	// global_fetch_strictly_public: refuses fetch() to private/internal
+	// addresses from within the Worker — the outbound Meta Graph API calls
+	// (modules/whatsapp/infrastructure/meta-whatsapp-provider.ts) only ever
+	// target a public host, so this costs nothing and closes off
+	// server-side-request-forgery via a compromised or misconfigured target.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	},
+	// The ONE binding this app's code reads: `env.DB` in
+	// lib/container.ts's `buildD1BaseServices`. `database_name` and
+	// `database_id` are placeholders — a human fills these in after running
+	// `wrangler d1 create` (see docs/cloudflare-deploy.md, which has the
+	// exact commands). `migrations_dir` points at the real migration
+	// stream (db/migrations/d1/*.sql) rather than a copy — do not add a
+	// `migrations` folder under this directory; there is nothing to
+	// duplicate.
+	// Rate limiting for the two endpoints reachable without a session:
+	// /api/auth/login (which pays a ~6ms PBKDF2 hash per attempt, against a
+	// 10ms CPU budget) and /api/auth/signup (which writes four rows per call,
+	// against a 100,000-writes-a-day quota shared by the whole product).
+	// Read via `env.AUTH_RATE_LIMITER` in lib/rate-limit.ts, keyed by
+	// CF-Connecting-IP with a separate counter per endpoint.
+	//
+	// `period` accepts only 10 or 60. 20 requests/60s per IP is loose enough
+	// that a person fumbling their password is never affected, and tight
+	// enough that a single-machine guessing loop gets almost nothing done.
+	//
+	// The counter is PER-COLOCATION, not global, so a distributed attacker's
+	// effective ceiling is higher than 20 — this is a flood brake, not a
+	// lockout, and lib/rate-limit.ts says so at more length.
+	//
+	// namespace_id is an arbitrary identifier YOU choose; it only has to stay
+	// stable, because changing it resets the counters.
+	"ratelimits": [
+		{
+			"name": "AUTH_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 20,
+				"period": 60
+			}
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "REPLACE_WITH_YOUR_D1_DATABASE_NAME",
+			"database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+			"migrations_dir": "../../db/migrations/d1"
+		}
+	]
+}

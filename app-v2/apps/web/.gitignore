@@ -1,0 +1,17 @@
+node_modules
+.next
+.open-next
+.wrangler
+next-env.d.ts
+
+# apps/web must NOT carry its own lockfile. `@opennextjs/cloudflare`'s build
+# walks UP from this directory looking for the nearest package-lock.json /
+# pnpm-lock.yaml / yarn.lock to decide where the "monorepo root" is (see
+# docs/cloudflare-deploy.md's "known fragile point"). A lockfile living
+# here makes it stop at apps/web instead of continuing up to app-v2's own
+# package-lock.json, which disagrees with next.config.ts's `turbopack.root`
+# (pinned to app-v2 for an unrelated, also-necessary reason) and breaks
+# `opennextjs-cloudflare build` with an ENOENT while bundling the Node.js
+# proxy/middleware. If npm ever regenerates this file, delete it again —
+# do not "fix" the build by changing turbopack.root instead.
+package-lock.json
