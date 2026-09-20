@@ -39,7 +39,7 @@ import type { WhatsAppConfigRecord } from "@modules/whatsapp/application/ports";
 import { getContainer } from "@/lib/container";
 import { getWhatsAppContainer } from "@/lib/whatsapp-container";
 import { authorizeAction } from "@/lib/authorize-route";
-import { fail, internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
+import { internalError, isZodError, ok, parseOrThrow, validationError } from "@/lib/api-response";
 
 function toConnectionDTO(config: WhatsAppConfigRecord): WhatsappConnection {
   return {
@@ -86,39 +86,30 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     const accountId = AccountId(tenant.tenantId);
     const existing = (await repositories.whatsappConfig.listByAccount(accountId))[0];
 
-    // Switching to a DIFFERENT number is refused rather than half-done.
-    // `upsert` is keyed on (account, phone_number_id), so a new id would
-    // INSERT a second row while `listByAccount()[0]` — what every send route
-    // reads — keeps returning the original. The operator would be told the
-    // number was replaced while every message still went out on the old one.
-    // Making this work needs a way to retire a config row, which the port
-    // does not have; that is a port change, not something to improvise here.
-    if (existing && existing.phoneNumberId !== input.phoneNumberId) {
-      return fail(
-        {
-          code: "phone_number_change_unsupported",
-          laymanMessage:
-            `This account is connected to number ${existing.phoneNumberId}. ` +
-            "Changing to a different number isn't supported yet — you can update the token for the current number.",
-        },
-        409,
-      );
-    }
+    // Changing to a DIFFERENT number is a replacement, not an addition, and
+    // goes through `replaceConfig` — `saveConfig`/`upsert` is keyed on the
+    // phone number, so it would leave the old row in place and every send
+    // route (all of which read the account's first config) would keep using
+    // it while the operator was told the number had changed.
+    const isNewNumber = existing !== undefined && existing.phoneNumberId !== input.phoneNumberId;
 
     const { service } = await getWhatsAppContainer();
-    const saved = await service.saveConfig({
+    const save = isNewNumber ? service.replaceConfig.bind(service) : service.saveConfig.bind(service);
+    const saved = await save({
       accountId,
       phoneNumberId: input.phoneNumberId,
       wabaId: input.wabaId,
-      // Meta owns these three; they arrive from a webhook or a later sync, and
-      // inventing values here would be fabricating data the screen renders.
-      displayName: existing?.displayName ?? null,
-      qualityRating: existing?.qualityRating ?? null,
-      verifiedName: existing?.verifiedName ?? null,
-      // A newly entered number has not been registered by us. An existing
-      // one keeps whatever state it had: re-entering a token does not undo a
-      // completed registration.
-      registrationState: existing?.registrationState ?? "pending",
+      // Meta owns these three. They are carried over only when the number is
+      // unchanged; on a new number they describe the OLD one, and copying
+      // them across would label the new number with the previous number's
+      // verified name and quality rating.
+      displayName: isNewNumber ? null : (existing?.displayName ?? null),
+      qualityRating: isNewNumber ? null : (existing?.qualityRating ?? null),
+      verifiedName: isNewNumber ? null : (existing?.verifiedName ?? null),
+      // A number we have not registered is pending. Re-entering a token for
+      // the SAME number does not undo a completed registration; switching to
+      // a new one starts over, because nothing has registered it yet.
+      registrationState: isNewNumber ? "pending" : (existing?.registrationState ?? "pending"),
       accessToken: input.accessToken,
     });
 

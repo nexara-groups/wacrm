@@ -140,6 +140,87 @@ describe("WhatsAppConfigRepository", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Changing which number an account sends from
+// ---------------------------------------------------------------------------
+
+describe("WhatsAppConfigRepository.replaceForAccount", () => {
+  function config(accountId: typeof ACCOUNT_A, phoneNumberId: string) {
+    return {
+      accountId,
+      phoneNumberId,
+      wabaId: `waba-${phoneNumberId}`,
+      displayName: null,
+      qualityRating: null,
+      verifiedName: null,
+      registrationState: "pending" as const,
+      accessToken: `token-for-${phoneNumberId}`,
+    };
+  }
+
+  it("leaves the account with exactly one config — the new number", async () => {
+    // The bug this exists to prevent: `upsert` with a new number leaves TWO
+    // rows, and every send route reads `listByAccount()[0]`, so the old
+    // number keeps sending while the operator is told it changed.
+    const repo = new WhatsAppConfigRepository(db);
+    await repo.upsert(config(ACCOUNT_A, "pn-old"));
+
+    const replaced = await repo.replaceForAccount(config(ACCOUNT_A, "pn-new"));
+
+    const rows = await repo.listByAccount(ACCOUNT_A);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.phoneNumberId).toBe("pn-new");
+    expect(replaced.phoneNumberId).toBe("pn-new");
+    // The retired number must no longer resolve at all — the webhook path
+    // looks numbers up globally, and a stale row would route a delivery to an
+    // account that no longer owns that number.
+    expect(await repo.findByPhoneNumberIdGlobal("pn-old")).toBeNull();
+    expect(await repo.findByPhoneNumberIdGlobal("pn-new")).not.toBeNull();
+  });
+
+  it("does not touch another account's config", async () => {
+    const repo = new WhatsAppConfigRepository(db);
+    await repo.upsert(config(ACCOUNT_B, "pn-b"));
+    await repo.upsert(config(ACCOUNT_A, "pn-a"));
+
+    await repo.replaceForAccount(config(ACCOUNT_A, "pn-a2"));
+
+    expect((await repo.listByAccount(ACCOUNT_B)).map((c) => c.phoneNumberId)).toEqual(["pn-b"]);
+  });
+
+  it("is atomic: a failing insert leaves the old config in place", async () => {
+    // A delete that landed without its insert would leave the account unable
+    // to send at all — worse than the bug being fixed. ACCOUNT_B already owns
+    // "pn-taken", and phone_number_id is globally UNIQUE, so this insert
+    // cannot succeed.
+    const repo = new WhatsAppConfigRepository(db);
+    await repo.upsert(config(ACCOUNT_B, "pn-taken"));
+    await repo.upsert(config(ACCOUNT_A, "pn-mine"));
+
+    await expect(repo.replaceForAccount(config(ACCOUNT_A, "pn-taken"))).rejects.toThrow();
+
+    const rows = await repo.listByAccount(ACCOUNT_A);
+    expect(rows.map((c) => c.phoneNumberId)).toEqual(["pn-mine"]);
+  });
+
+  it("seals the new token, and hands back the plaintext", async () => {
+    const c = createSecretCipher(await importSecretKey(generateSecretKeyMaterial()));
+    const repo = new WhatsAppConfigRepository(db, c);
+    await repo.upsert(config(ACCOUNT_A, "pn-old"));
+
+    const replaced = await repo.replaceForAccount(config(ACCOUNT_A, "pn-new"));
+
+    expect(replaced.accessToken).toBe("token-for-pn-new");
+    const raw = await db.query<{ access_token: string }>(
+      `-- tenant-scope-exempt: reads the raw column this test asserts about, by its unique key
+       select access_token from whatsapp_configs where phone_number_id = $1`,
+      ["pn-new"],
+    );
+    expect(isSealed(raw.rows[0]!.access_token)).toBe(true);
+    expect((await repo.findByPhoneNumberId(ACCOUNT_A, "pn-new"))!.accessToken).toBe("token-for-pn-new");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Access-token encryption at rest
 //
 // The column held plaintext for the whole life of this project; these tests

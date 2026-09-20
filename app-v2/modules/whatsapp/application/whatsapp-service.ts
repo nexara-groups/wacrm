@@ -303,6 +303,18 @@ export class WhatsAppService {
     return this.configs.upsert(input);
   }
 
+  /**
+   * Moves the account to a DIFFERENT number, retiring the one it had.
+   *
+   * Separate from `saveConfig` because the two are not interchangeable:
+   * `upsert` is keyed on the phone number, so using it for a new number
+   * leaves the old row in place and every send keeps using it. See the port's
+   * `replaceForAccount` for the atomicity requirement.
+   */
+  async replaceConfig(input: NewWhatsAppConfigInput): Promise<WhatsAppConfigRecord> {
+    return this.configs.replaceForAccount(input);
+  }
+
   // -------------------------------------------------------------------
   // Template CRUD — provider call, then map + persist the local mirror.
   // -------------------------------------------------------------------

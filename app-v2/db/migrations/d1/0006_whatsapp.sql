@@ -26,10 +26,14 @@ CREATE TABLE IF NOT EXISTS whatsapp_configs (
   -- until /register + /subscribed_apps have both succeeded.
   registration_state    TEXT NOT NULL DEFAULT 'unregistered'
     CHECK (registration_state IN ('unregistered','pending','registered','failed')),
-  -- Opaque string. Encrypted at rest by the caller (mirrors the existing
-  -- app's `whatsapp_config.access_token` handling) — this module stores
-  -- and returns whatever it is given; encryption/decryption is outside
-  -- this track's scope.
+  -- Opaque string, and never plaintext once a key is configured:
+  -- `WhatsAppConfigRepository` seals it on write and opens it on read
+  -- (AES-256-GCM, bound to this row — see nexara/core/crypto/secret-box.ts).
+  -- A row written before that existed still holds plaintext and is re-sealed
+  -- by its next write; `isSealed()` tells the two apart. Comment corrected
+  -- in place: it used to say encryption was the caller's job, which is how
+  -- the column ended up holding plaintext for the whole first half of this
+  -- build.
   access_token          TEXT NOT NULL,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL

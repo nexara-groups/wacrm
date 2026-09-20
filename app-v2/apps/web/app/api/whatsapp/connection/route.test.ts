@@ -9,6 +9,7 @@ const OWNER_TENANT = "c92487e4-b4a8-45b1-b605-065099b7fa0d";
 
 const configs: Record<string, unknown[]> = { [OWNER_TENANT]: [] };
 const saved: unknown[] = [];
+const replaced: unknown[] = [];
 let role = "owner";
 
 vi.mock("@/lib/container", () => ({
@@ -38,6 +39,13 @@ vi.mock("@/lib/whatsapp-container", () => ({
         saved.push(input);
         return { ...input, id: "cfg-1", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
       },
+      // Recorded separately from saveConfig: which of the two a number change
+      // goes through is the whole point — `upsert` would leave the old row in
+      // place and every send would keep using it.
+      replaceConfig: async (input: Record<string, unknown>) => {
+        replaced.push(input);
+        return { ...input, id: "cfg-2", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+      },
     },
   }),
 }));
@@ -57,6 +65,7 @@ const VALID = { wabaId: "waba-1", phoneNumberId: "pn-1", accessToken: "EAAG-secr
 beforeEach(() => {
   configs[OWNER_TENANT] = [];
   saved.length = 0;
+  replaced.length = 0;
   role = "owner";
 });
 
@@ -130,11 +139,11 @@ describe("PUT /api/whatsapp/connection", () => {
     });
   });
 
-  it("refuses a different phone number instead of silently adding a second row", async () => {
+  it("REPLACES the config when the number changes, rather than adding a second one", async () => {
     configs[OWNER_TENANT] = [
       {
-        id: "cfg-1", accountId: OWNER_TENANT, phoneNumberId: "pn-old", wabaId: "waba-1",
-        displayName: null, verifiedName: null, qualityRating: null,
+        id: "cfg-1", accountId: OWNER_TENANT, phoneNumberId: "pn-old", wabaId: "waba-old",
+        displayName: "Old Name", verifiedName: "Old Verified", qualityRating: "GREEN",
         registrationState: "registered", accessToken: "old-token",
         createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
       },
@@ -142,10 +151,36 @@ describe("PUT /api/whatsapp/connection", () => {
 
     const response = await PUT(put(VALID) as never);
 
-    expect(response.status).toBe(409);
-    expect((await response.json()).error.code).toBe("phone_number_change_unsupported");
-    // The silent failure this prevents: a second row the send path never reads.
+    expect(response.status).toBe(200);
+    // Through replaceConfig, never saveConfig: the latter is keyed on the
+    // phone number and would leave "pn-old" in place, still sending.
     expect(saved).toEqual([]);
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toMatchObject({ accountId: OWNER_TENANT, phoneNumberId: "pn-1" });
+  });
+
+  it("does not label a new number with the old number's names or rating", async () => {
+    // displayName/verifiedName/qualityRating describe the number Meta issued
+    // them for. Carrying them across would show the previous number's
+    // verified name beside the new one.
+    configs[OWNER_TENANT] = [
+      {
+        id: "cfg-1", accountId: OWNER_TENANT, phoneNumberId: "pn-old", wabaId: "waba-old",
+        displayName: "Old Name", verifiedName: "Old Verified", qualityRating: "GREEN",
+        registrationState: "registered", accessToken: "old-token",
+        createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+
+    await PUT(put(VALID) as never);
+
+    expect(replaced[0]).toMatchObject({
+      displayName: null,
+      verifiedName: null,
+      qualityRating: null,
+      // Nothing has registered the new number yet, whatever the old one's state was.
+      registrationState: "pending",
+    });
   });
 
   it("rejects a missing token without touching storage", async () => {

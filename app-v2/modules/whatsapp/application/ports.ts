@@ -88,6 +88,25 @@ export interface WhatsAppConfigRepositoryPort {
   /** Insert-or-update keyed on `(account_id, phone_number_id)` — the
    *  migration's UNIQUE constraint on `phone_number_id`. */
   upsert(input: NewWhatsAppConfigInput): Promise<WhatsAppConfigRecord>;
+
+  /**
+   * Makes `input` the account's ONLY config, retiring every other row it has.
+   *
+   * `upsert` cannot express changing which number an account sends from: it is
+   * keyed on the phone number, so a new one INSERTS a second row while every
+   * send route — all of which read `listByAccount()[0]` — keeps using the
+   * first. The operator is told the number changed and every message still
+   * goes out on the old one. A route cannot fix that by calling `upsert`
+   * twice, because the delete and the insert have to land together or not at
+   * all; so the atomicity lives here, in one `batch()`, where the only
+   * primitive both candidate stores agree on is available.
+   *
+   * Retiring means deleting. Nothing references `whatsapp_configs` by foreign
+   * key (migration 0006), and the number genuinely has moved on — keeping a
+   * historical row would mean every read filtering it out, and one that
+   * forgot would resurrect a dead credential.
+   */
+  replaceForAccount(input: NewWhatsAppConfigInput): Promise<WhatsAppConfigRecord>;
   updateRegistrationState(
     accountId: AccountId,
     phoneNumberId: string,

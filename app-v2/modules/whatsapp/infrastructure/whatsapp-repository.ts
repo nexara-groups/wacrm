@@ -15,7 +15,7 @@
  * reaching for the `no-tenant` escape hatch — which would incorrectly claim
  * these statements are NOT tenant-scoped, when they are.
  */
-import type { DatabaseProvider, Row } from "@nexara/core/database/database-provider.interface";
+import type { AtomicBatchDatabaseProvider, DatabaseProvider, Row } from "@nexara/core/database/database-provider.interface";
 import {
   openStoredSecret,
   sealStoredSecret,
@@ -109,7 +109,7 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
    * production.
    */
   constructor(
-    private readonly db: DatabaseProvider,
+    private readonly db: AtomicBatchDatabaseProvider,
     private readonly cipher: SecretCipher | null = null,
   ) {}
 
@@ -223,6 +223,68 @@ export class WhatsAppConfigRepository implements WhatsAppConfigRepositoryPort {
       qualityRating: input.qualityRating,
       verifiedName: input.verifiedName,
       registrationState: input.registrationState,
+      accessToken: input.accessToken,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * See `WhatsAppConfigRepositoryPort.replaceForAccount`. Delete-then-insert in
+   * ONE `batch()`: a delete that landed without its insert would leave the
+   * account unable to send at all, which is worse than the stale-number bug
+   * this method exists to fix.
+   *
+   * The insert is unconditional rather than an upsert because the delete
+   * immediately before it removed every row this account had, including one
+   * for this same number if it existed.
+   */
+  async replaceForAccount(input: NewWhatsAppConfigInput): Promise<WhatsAppConfigRecord> {
+    const now = new Date().toISOString();
+    const id = newId();
+    const storedToken = await sealStoredSecret(
+      input.accessToken,
+      this.cipher,
+      tokenContext(input.accountId, input.phoneNumberId),
+    );
+
+    await this.db.batch([
+      {
+        sql: `-- tenant_id equivalent for this table: account_id
+              delete from whatsapp_configs where account_id = $1`,
+        params: [input.accountId],
+      },
+      {
+        sql: `-- tenant_id equivalent for this table: account_id
+              insert into whatsapp_configs
+                (id, account_id, phone_number_id, waba_id, display_name, quality_rating, verified_name,
+                 registration_state, access_token, created_at, updated_at)
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+        params: [
+          id,
+          input.accountId,
+          input.phoneNumberId,
+          input.wabaId,
+          input.displayName,
+          input.qualityRating,
+          input.verifiedName,
+          input.registrationState,
+          storedToken,
+          now,
+        ],
+      },
+    ]);
+
+    return {
+      id,
+      accountId: input.accountId,
+      phoneNumberId: input.phoneNumberId,
+      wabaId: input.wabaId,
+      displayName: input.displayName,
+      qualityRating: input.qualityRating,
+      verifiedName: input.verifiedName,
+      registrationState: input.registrationState,
+      // The caller's plaintext, never the sealed value — same contract as `upsert`.
       accessToken: input.accessToken,
       createdAt: now,
       updatedAt: now,

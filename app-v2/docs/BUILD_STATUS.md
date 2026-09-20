@@ -27,6 +27,7 @@ fails without the code — not "the report said so".
 | Media upload | `POST /api/media` turns a browser file into a Meta media id; 5 MB cap checked twice, closed MIME allow-list |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
+| Changing the WhatsApp number | `replaceForAccount` retires the old config and stores the new one in one `batch()`; the retired number stops resolving for the webhook, and the new one carries none of the old one's names or rating |
 | WhatsApp settings screen | `/settings/whatsapp` shows the connected number and registration state in plain words; saving over a live connection takes a confirmation; the token field is write-only and empties on success |
 | Authorization | every tenant write route gated on a minimum role from one table (`apps/web/lib/route-authorization.ts`); verified live with a real invited member — a member can send and keep contacts, and is refused assignment, broadcasts, seats, member removal and the WhatsApp number |
 | WhatsApp connection API | `GET`/`PUT /api/whatsapp/connection`; the token is write-only (never echoed, even masked), the tenant comes from the session, writing is owner-only |
@@ -35,16 +36,7 @@ fails without the code — not "the report said so".
 
 ## Next, in order
 
-1. **Switching to a different WhatsApp number.** `PUT
-   /api/whatsapp/connection` refuses it with a 409 rather than half-doing it:
-   `upsert` is keyed on (account, phone_number_id), so a new id inserts a
-   SECOND row while `listByAccount()[0]` — what every send route reads — keeps
-   returning the original, and the operator would be told the number changed
-   while every message still went out on the old one. Making it work needs a
-   way to retire a config row, which `WhatsAppConfigRepositoryPort` does not
-   have. That is a port + repository change, deliberately not improvised
-   inside a route.
-2. **~20 unported screens** — dashboard, settings, templates, automations,
+1. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
