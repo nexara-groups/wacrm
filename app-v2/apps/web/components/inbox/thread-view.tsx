@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/ui/empty-state";
 import { MessageStatusBadge } from "@/components/inbox/badges";
+import { Composer } from "@/components/inbox/composer";
 import { cn } from "@/lib/utils";
 
 export function ThreadView({
@@ -22,6 +23,7 @@ export function ThreadView({
   ownerUserId,
   onAssign,
   assigning,
+  onMessageSent,
 }: {
   conversation: Conversation | null;
   contact: Contact | undefined;
@@ -34,6 +36,7 @@ export function ThreadView({
   ownerUserId: string;
   onAssign: (assignedUserId: string | null) => void;
   assigning: boolean;
+  onMessageSent: (message: Message) => void;
 }) {
   if (conversation === null) {
     return (
@@ -128,6 +131,8 @@ export function ThreadView({
           </div>
         )}
       </div>
+
+      <Composer key={conversation.id} conversationId={conversation.id} onSent={onMessageSent} />
     </div>
   );
 }

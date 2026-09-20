@@ -208,6 +208,13 @@ export function InboxView({
     [selectedId],
   );
 
+  const handleMessageSent = useCallback((message: Message) => {
+    // Prepend, not append: the thread is newest-first (see thread-view.tsx's
+    // header comment), and a message just sent is the newest one there is.
+    // No refetch — the route already handed back the persisted row.
+    setMessages((prev) => [message, ...prev]);
+  }, []);
+
   const selectedContact = selectedConversation ? contactsById.get(selectedConversation.contactId) : undefined;
 
   return (
@@ -249,6 +256,7 @@ export function InboxView({
           ownerUserId={ownerUserId}
           onAssign={handleAssign}
           assigning={assigning}
+          onMessageSent={handleMessageSent}
         />
       </div>
     </div>

@@ -14,7 +14,7 @@ fails without the code — not "the report said so".
 | Area | State |
 |---|---|
 | Contacts | list, search, create; phone normalisation through the whole stack |
-| Inbox | conversation list, thread, mark-read, assign (assignee membership checked) |
+| Inbox | conversation list, thread, mark-read, assign (assignee membership checked), reply composer — text and template, verified in a real browser |
 | Broadcasts | list, create, schedule, pause/resume/cancel, report, audience preview with skips grouped by reason |
 | Team / seats | usage, members, invitations, cap proven at 3/3; invite → email → accept → login verified end to end |
 | Auth | password login, PBKDF2 (Workers-safe), 12-char minimum, 3h/1h sessions, revocation |
@@ -29,7 +29,16 @@ fails without the code — not "the report said so".
 
 ## Next, in order
 
-1. **~20 unported screens** — dashboard, settings, templates, automations,
+1. **WhatsApp number settings** — a tenant cannot connect its own number;
+   config rows are seeded by hand. BLOCKED ON A DECISION: the access token
+   would be stored in plaintext, since nothing in the codebase encrypts it
+   (`WhatsAppConfigRecord.accessToken` says "encrypted at rest by the caller"
+   and the only caller seeds a fake). Needs AES-GCM under a Worker secret
+   before the screen exists.
+2. **Media and interactive composer modes** — both routes exist and are
+   tested; only text and template are reachable from the inbox. Media also
+   needs an upload path (`WhatsAppService.uploadMedia` has no route).
+3. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
@@ -70,6 +79,11 @@ Each of these cost real time or shipped a bug. They are not style preferences.
   explicitly — a cast there would compile and lie. Likewise the contract's
   media enum carries `sticker`, which the port does not model: the route
   refuses it with a 422 rather than widening the port.
+
+- **A route with no UI is not a shipped feature.** Text send had a route,
+  contract, tests and a service layer for weeks, and no composer — nobody
+  could reply to a customer. The same pattern had already produced an invite
+  token nobody could receive. A slice is done when a person can reach it.
 
 - **Never trust a tenant from a request.** Derive it from a verified token, or
   from a row found by a globally-unique key. Signup ignores a client-supplied
