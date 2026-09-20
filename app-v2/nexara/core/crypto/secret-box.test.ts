@@ -12,6 +12,18 @@ import {
 const CONTEXT = "whatsapp_config:acct-a:1234567890";
 const TOKEN = "EAAG_a_meta_access_token_shaped_string_0123456789";
 
+function decodeBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "="));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
+}
+
+function encodeBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 async function key(): Promise<CryptoKey> {
   return importSecretKey(generateSecretKeyMaterial());
 }
@@ -46,11 +58,23 @@ describe("secret box", () => {
   });
 
   it("refuses a tampered ciphertext", async () => {
+    // Tamper at the BYTE level, not by editing a base64url character. The
+    // final character of a base64url string carries padding bits that decode
+    // to nothing, so changing it can leave the decoded bytes identical — a
+    // first version of this test did exactly that and passed or failed
+    // depending on which character the ciphertext happened to end with.
     const k = await key();
     const sealed = await sealSecret(TOKEN, k, CONTEXT);
-    const [v, iv, cipher] = sealed.split(".");
-    const flipped = cipher!.slice(0, -1) + (cipher!.endsWith("A") ? "B" : "A");
-    await expect(openSecret(`${v}.${iv}.${flipped}`, k, CONTEXT)).rejects.toThrow(SecretBoxError);
+    const [v, iv, cipher] = sealed.split(".") as [string, string, string];
+
+    const bytes = decodeBase64Url(cipher);
+    for (const position of [0, Math.floor(bytes.length / 2), bytes.length - 1]) {
+      const flipped = Uint8Array.from(bytes);
+      flipped[position]! ^= 0xff;
+      await expect(openSecret(`${v}.${iv}.${encodeBase64Url(flipped)}`, k, CONTEXT)).rejects.toThrow(
+        SecretBoxError,
+      );
+    }
   });
 
   it("refuses the wrong key", async () => {

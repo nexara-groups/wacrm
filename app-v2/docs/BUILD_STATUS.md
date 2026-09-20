@@ -22,7 +22,8 @@ fails without the code — not "the report said so".
 | Signup | self-serve tenant creation, all four rows in one `batch()`, atomicity proven |
 | Platform console | audit log, compliance cases (two-person, TTL'd, scoped); staff cannot browse message content |
 | WhatsApp inbound | signature-verified (raw bytes, constant-time), idempotent, messages reach the inbox |
-| WhatsApp outbound | text, template, media, interactive — every send goes through one consent/suppression failure mapping (`apps/web/lib/send-plumbing.ts`) |
+| WhatsApp outbound | text, template, media, interactive — all four reachable from the inbox composer and verified in a browser; every send goes through one consent/suppression failure mapping (`apps/web/lib/send-plumbing.ts`) |
+| Media upload | `POST /api/media` turns a browser file into a Meta media id; 5 MB cap checked twice, closed MIME allow-list |
 | Rate limiting | login + signup, Cloudflare binding, IP-keyed, fails open |
 | Cloudflare | `opennextjs-cloudflare build` succeeds; worker runs under `wrangler dev` against migrated D1 |
 | Retention | 60-day policy, migration, SQL sweep, and a daily Cron Trigger (09:00 UTC) with a per-run write budget. Fired locally against real D1; rows deleted. |
@@ -39,10 +40,7 @@ fails without the code — not "the report said so".
    `SECRET_ENCRYPTION_KEY` Worker secret that the container refuses to start
    without in production, the way it already refuses a missing `AUTH_SECRET`;
    then the screen.
-2. **Media and interactive composer modes** — both routes exist and are
-   tested; only text and template are reachable from the inbox. Media also
-   needs an upload path (`WhatsAppService.uploadMedia` has no route).
-3. **~20 unported screens** — dashboard, settings, templates, automations,
+2. **~20 unported screens** — dashboard, settings, templates, automations,
    flows, pipelines, notifications, agents, forgot-password, join-by-invite,
    and the `/admin` fleet views.
 
